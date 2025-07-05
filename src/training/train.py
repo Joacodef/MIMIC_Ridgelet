@@ -6,6 +6,7 @@ from tqdm import tqdm
 from dotenv import load_dotenv
 from sklearn.metrics import roc_auc_score
 import shutil
+from datetime import datetime
 
 from monai.data import DataLoader
 from monai.transforms import Compose, LoadImaged, EnsureChannelFirstd, ScaleIntensityRanged, Resized, RandFlipd, RandAffined
@@ -135,21 +136,24 @@ def main(config_path):
     print(f"Using optimizer: {optimizer_name.capitalize()}")
     
     # --- 5. Training Loop ---
-    # Initialize variables for early stopping
     best_val_loss = float('inf')
     epochs_no_improve = 0
     patience = config.training.early_stopping_patience
 
-    # Define output directory and model path using the config object
+    # Create a unique directory for this training run
     model_name = config.model.base_model
-    output_model_dir = os.path.join(PROJECT_OUTPUT_FOLDER_PATH, "models", config.data.split_folder_name, model_name)
-    os.makedirs(output_model_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"{model_name}_{timestamp}"
+    
+    output_run_dir = os.path.join(PROJECT_OUTPUT_FOLDER_PATH, "models", config.data.split_folder_name, run_name)
+    os.makedirs(output_run_dir, exist_ok=True)
+    print(f"Saving artifacts to: {output_run_dir}")
 
     # Save the config file to the output directory for reproducibility
-    shutil.copy(config_path, os.path.join(output_model_dir, 'config.yaml'))
+    shutil.copy(config_path, os.path.join(output_run_dir, 'config.yaml'))
 
     output_model_name = config.training.output_model_name
-    best_model_path = os.path.join(output_model_dir, output_model_name)
+    best_model_path = os.path.join(output_run_dir, output_model_name)
 
     print("--- Starting Training ---")
     for epoch in range(config.training.epochs):
@@ -162,10 +166,18 @@ def main(config_path):
         
         # --- 6. Model Checkpointing & Early Stopping ---
         if val_loss < best_val_loss:
-            print(f"Validation loss improved from {best_val_loss:.4f} to {val_loss:.4f}. Saving model...")
+            print(f"Validation loss improved from {best_val_loss:.4f} to {val_loss:.4f}. Saving checkpoint...")
             best_val_loss = val_loss
             epochs_no_improve = 0
-            torch.save(model.state_dict(), best_model_path)
+            
+            # Create a dictionary to save all relevant training states
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_val_loss': best_val_loss,
+            }
+            torch.save(checkpoint, best_model_path)
         else:
             epochs_no_improve += 1
             print(f"Validation loss did not improve for {epochs_no_improve} epoch(s).")
@@ -178,8 +190,10 @@ def main(config_path):
     print(f"Finished training. Best validation loss achieved: {best_val_loss:.4f}")
     print(f"Best model saved to: {best_model_path}")
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a fracture detection model.")
     parser.add_argument("--config", type=str, required=True, help="Path to the configuration YAML file.")
+    parser.add_argument("--resume_dir", type=str, default=None, help="Path to a previous run's directory to resume training from.")
     args = parser.parse_args()
     main(args.config)
