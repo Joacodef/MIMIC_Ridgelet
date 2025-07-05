@@ -1,0 +1,15 @@
+# config.yaml
+data:
+  split_folder_name: "split_2000"
+  image_size: 256
+
+dataloader:
+  batch_size: 32
+  num_workers: 4
+
+model:
+  base_model: "resnet18"
+
+training:
+  epochs: 10
+  learning_rate: 0.001
