@@ -1,15 +1,26 @@
-# config.yaml
+# configs/config.yaml
+
+# Data configuration
 data:
   split_folder_name: "split_2000"
-  image_size: 256
+  image_size: 256 # Used for resizing images
+  augmentations:
+    rand_flip_prob: 0.5
+    rand_affine_prob: 0.5
+    rotate_range: 0.1
+    scale_range: 0.1
 
+# Dataloader configuration
 dataloader:
   batch_size: 32
   num_workers: 4
 
+# Model configuration
 model:
-  base_model: "resnet18"
+  base_model: "resnet18" # Or another model name your FractureDetector supports
 
+# Training configuration
 training:
-  epochs: 10
+  epochs: 50
   learning_rate: 0.001
+  early_stopping_patience: 10 # Number of epochs to wait for improvement before stopping

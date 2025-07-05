@@ -1,0 +1,76 @@
+import yaml
+from dataclasses import dataclass, field, is_dataclass
+from typing import Dict, Any
+
+# --- Configuration Data Classes ---
+
+@dataclass
+class AugmentationConfig:
+    """Configuration for data augmentations."""
+    rand_flip_prob: float = 0.5
+    rand_affine_prob: float = 0.5
+    rotate_range: float = 0.1
+    scale_range: float = 0.1
+
+@dataclass
+class DataConfig:
+    split_folder_name: str
+    image_size: int = 256
+    augmentations: AugmentationConfig = field(default_factory=AugmentationConfig)
+
+@dataclass
+class DataLoaderConfig:
+    batch_size: int = 32
+    num_workers: int = 4
+
+@dataclass
+class ModelConfig:
+    base_model: str = "resnet18"
+
+@dataclass
+class TrainingConfig:
+    optimizer: str = "Adam"
+    epochs: int = 50
+    learning_rate: float = 0.001
+    early_stopping_patience: int = 10
+    output_model_name: str = "best_model.pth"
+
+@dataclass
+class AppConfig:
+    data: DataConfig
+    dataloader: DataLoaderConfig
+    model: ModelConfig
+    training: TrainingConfig
+
+# --- Configuration Loader ---
+
+def _from_dict(data_class: Any, data: dict) -> Any:
+    """
+    Recursively creates a dataclass instance from a dictionary.
+    """
+    if not is_dataclass(data_class):
+        return data
+
+    field_types = {f.name: f.type for f in data_class.__dataclass_fields__.values()}
+    
+    init_args = {}
+    for key, value in data.items():
+        if key in field_types:
+            # Recursively call _from_dict for nested dataclasses
+            init_args[key] = _from_dict(field_types[key], value)
+    
+    return data_class(**init_args)
+
+
+def load_config(path: str) -> AppConfig:
+    """
+    Loads configuration from a YAML file, sets defaults, and returns a
+    structured AppConfig object.
+    """
+    with open(path, 'r') as f:
+        yaml_data = yaml.safe_load(f)
+
+    # Create the final configuration object using the recursive helper
+    config = _from_dict(AppConfig, yaml_data)
+    
+    return config

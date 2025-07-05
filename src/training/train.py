@@ -1,15 +1,16 @@
 import os
 import argparse
-import yaml
 import torch
 import torch.nn as nn
 from tqdm import tqdm
 from dotenv import load_dotenv
 from sklearn.metrics import roc_auc_score
+import shutil
 
 from monai.data import DataLoader
 from monai.transforms import Compose, LoadImaged, EnsureChannelFirstd, ScaleIntensityRanged, Resized, RandFlipd, RandAffined
 
+from ..config.config import load_config
 from ..models.model import FractureDetector
 from ..data.dataset import CXRFractureDataset
 
@@ -22,7 +23,7 @@ def train_one_epoch(model, train_loader, optimizer, criterion, device):
     progress_bar = tqdm(train_loader, desc="Training", unit="batch")
     for batch_data in progress_bar:
         images = batch_data["image"].to(device)
-        labels = batch_data["label"].to(device).unsqueeze(1) # Ensure labels are [B, 1]
+        labels = batch_data["label"].to(device).unsqueeze(1)
 
         optimizer.zero_grad()
         
@@ -70,8 +71,7 @@ def validate(model, val_loader, criterion, device):
 def main(config_path):
     """Main function to run the training pipeline."""
     # --- 1. Load Configurations ---
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
+    config = load_config(config_path)
 
     load_dotenv()
     IMAGE_ROOT_DIR = os.getenv("MIMIC_CXR_P_FOLDERS_PATH")
@@ -84,61 +84,99 @@ def main(config_path):
     
     # --- 3. Data Preparation ---
     print("Setting up data pipelines...")
+    augs = config.data.augmentations  # A shorthand for convenience
+
     train_transforms = Compose([
         LoadImaged(keys=["image"]),
         EnsureChannelFirstd(keys=["image"]),
         ScaleIntensityRanged(keys=["image"], a_min=0.0, a_max=255.0, b_min=0.0, b_max=1.0, clip=True),
-        Resized(keys=["image"], spatial_size=(config['data']['image_size'], config['data']['image_size'])),
-        RandFlipd(keys=["image"], prob=0.5, spatial_axis=0),
-        RandAffined(keys=["image"], prob=0.5, rotate_range=(0.1), scale_range=(0.1))
+        Resized(keys=["image"], spatial_size=(config.data.image_size, config.data.image_size)),
+        RandFlipd(keys=["image"], prob=augs.rand_flip_prob, spatial_axis=0),
+        RandAffined(
+            keys=["image"], 
+            prob=augs.rand_affine_prob, 
+            rotate_range=(augs.rotate_range), 
+            scale_range=(augs.scale_range)
+        )
     ])
-    
+
+    # The val_transforms block remains the same as it has no random augmentations
     val_transforms = Compose([
         LoadImaged(keys=["image"]),
         EnsureChannelFirstd(keys=["image"]),
         ScaleIntensityRanged(keys=["image"], a_min=0.0, a_max=255.0, b_min=0.0, b_max=1.0, clip=True),
-        Resized(keys=["image"], spatial_size=(config['data']['image_size'], config['data']['image_size'])),
+        Resized(keys=["image"], spatial_size=(config.data.image_size, config.data.image_size))
     ])
-    
-    split_dir = os.path.join(PROJECT_DATA_FOLDER_PATH, "splits", config['data']['split_folder_name'])
+
+    split_dir = os.path.join(PROJECT_DATA_FOLDER_PATH, "splits", config.data.split_folder_name)
     train_csv = os.path.join(split_dir, "train.csv")
     val_csv = os.path.join(split_dir, "validation.csv")
 
     train_dataset = CXRFractureDataset(csv_path=train_csv, image_root_dir=IMAGE_ROOT_DIR, transform=train_transforms)
     val_dataset = CXRFractureDataset(csv_path=val_csv, image_root_dir=IMAGE_ROOT_DIR, transform=val_transforms)
 
-    train_loader = DataLoader(train_dataset, batch_size=config['dataloader']['batch_size'], shuffle=True, num_workers=config['dataloader']['num_workers'])
-    val_loader = DataLoader(val_dataset, batch_size=config['dataloader']['batch_size'], shuffle=False, num_workers=config['dataloader']['num_workers'])
+    train_loader = DataLoader(train_dataset, batch_size=config.dataloader.batch_size, shuffle=True, num_workers=config.dataloader.num_workers)
+    val_loader = DataLoader(val_dataset, batch_size=config.dataloader.batch_size, shuffle=False, num_workers=config.dataloader.num_workers)
 
     # --- 4. Model, Loss, Optimizer ---
     print("Initializing model, criterion, and optimizer...")
-    model = FractureDetector(base_model_name=config['model']['base_model']).to(device)
+    model = FractureDetector(base_model_name=config.model.base_model).to(device)
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=config['training']['learning_rate'])
+
+    # Select optimizer from config
+    optimizer_name = config.training.optimizer.lower()
+    if optimizer_name == 'adam':
+        optimizer = torch.optim.Adam(model.parameters(), lr=config.training.learning_rate)
+    elif optimizer_name == 'sgd':
+        optimizer = torch.optim.SGD(model.parameters(), lr=config.training.learning_rate)
+    else:
+        raise ValueError(f"Optimizer '{optimizer_name}' not supported.")
+
+    print(f"Using optimizer: {optimizer_name.capitalize()}")
     
     # --- 5. Training Loop ---
-    best_val_auc = 0.0
-    # Use the environment variable for the base output path
-    output_model_dir = os.path.join(PROJECT_OUTPUT_FOLDER_PATH, "models", config['data']['split_folder_name']) # <-- Changed this line
+    # Initialize variables for early stopping
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+    patience = config.training.early_stopping_patience
+
+    # Define output directory and model path using the config object
+    model_name = config.model.base_model
+    output_model_dir = os.path.join(PROJECT_OUTPUT_FOLDER_PATH, "models", config.data.split_folder_name, model_name)
     os.makedirs(output_model_dir, exist_ok=True)
 
+    # Save the config file to the output directory for reproducibility
+    shutil.copy(config_path, os.path.join(output_model_dir, 'config.yaml'))
+
+    output_model_name = config.training.output_model_name
+    best_model_path = os.path.join(output_model_dir, output_model_name)
+
     print("--- Starting Training ---")
-    for epoch in range(config['training']['epochs']):
-        print(f"\nEpoch {epoch + 1}/{config['training']['epochs']}")
+    for epoch in range(config.training.epochs):
+        print(f"\nEpoch {epoch + 1}/{config.training.epochs}")
         
         train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
         val_loss, val_auc = validate(model, val_loader, criterion, device)
         
         print(f"Epoch Summary: Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val AUC: {val_auc:.4f}")
         
-        # --- 6. Model Checkpointing ---
-        if val_auc > best_val_auc:
-            print(f"Validation AUC improved from {best_val_auc:.4f} to {val_auc:.4f}. Saving model...")
-            best_val_auc = val_auc
-            torch.save(model.state_dict(), os.path.join(output_model_dir, "best_model.pth"))
+        # --- 6. Model Checkpointing & Early Stopping ---
+        if val_loss < best_val_loss:
+            print(f"Validation loss improved from {best_val_loss:.4f} to {val_loss:.4f}. Saving model...")
+            best_val_loss = val_loss
+            epochs_no_improve = 0
+            torch.save(model.state_dict(), best_model_path)
+        else:
+            epochs_no_improve += 1
+            print(f"Validation loss did not improve for {epochs_no_improve} epoch(s).")
+        
+        if epochs_no_improve >= patience:
+            print(f"\nEarly stopping triggered after {patience} epochs without improvement.")
+            break
             
-    print("--- Training Complete ---")
-    print(f"Best validation AUC achieved: {best_val_auc:.4f}")
+    print("\n--- Training Complete ---")
+    print(f"Finished training. Best validation loss achieved: {best_val_loss:.4f}")
+    print(f"Best model saved to: {best_model_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a fracture detection model.")
