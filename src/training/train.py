@@ -20,6 +20,7 @@ from monai.transforms import Compose, LoadImaged, EnsureChannelFirstd, ScaleInte
 from ..config.config import load_config, AppConfig
 from ..data.dataset import CXRFractureDataset
 from ..models.model import FractureDetector
+from ..data.transforms import RidgeletTransformd
 
 
 def train_one_epoch(model, train_loader, optimizer, criterion, device):
@@ -98,23 +99,38 @@ def run_training(
     # --- 2. Data Preparation ---
     print("Setting up data pipelines...")
     augs = config.data.augmentations
-    train_transforms = Compose([
+
+    # Define a base list of transforms common to both training and validation
+    base_transforms_list = [
         LoadImaged(keys=["image"]),
         EnsureChannelFirstd(keys=["image"]),
         ScaleIntensityRanged(keys=["image"], a_min=0.0, a_max=255.0, b_min=0.0, b_max=1.0, clip=True),
-        Resized(keys=["image"], spatial_size=(config.data.image_size, config.data.image_size)),
+    ]
+
+    # Conditionally add the Ridgelet Transform if enabled in the config
+    if config.data.use_ridgelet:
+        print("INFO: Ridgelet transform will be applied.")
+        # Assuming RidgeletTransformd is imported from your transforms file
+        from your_project.data.transforms import RidgeletTransformd 
+        base_transforms_list.append(RidgeletTransformd(keys=["image"]))
+
+    # Add resizing, which should happen after the main image processing
+    base_transforms_list.append(
+        Resized(keys=["image"], spatial_size=(config.data.image_size, config.data.image_size))
+    )
+
+    # Create the validation transforms from the base list
+    val_transforms = Compose(base_transforms_list)
+
+    # Create the training transforms by adding augmentations to the base list
+    train_transforms_list = base_transforms_list + [
         RandFlipd(keys=["image"], prob=augs.rand_flip_prob, spatial_axis=0),
         RandAffined(
-            keys=["image"], prob=augs.rand_affine_prob, 
+            keys=["image"], prob=augs.rand_affine_prob,
             rotate_range=(augs.rotate_range), scale_range=(augs.scale_range)
         )
-    ])
-    val_transforms = Compose([
-        LoadImaged(keys=["image"]),
-        EnsureChannelFirstd(keys=["image"]),
-        ScaleIntensityRanged(keys=["image"], a_min=0.0, a_max=255.0, b_min=0.0, b_max=1.0, clip=True),
-        Resized(keys=["image"], spatial_size=(config.data.image_size, config.data.image_size))
-    ])
+    ]
+    train_transforms = Compose(train_transforms_list)
 
     split_dir = os.path.join(PROJECT_DATA_FOLDER_PATH, "splits", config.data.split_folder_name)
     train_csv = train_csv_override if train_csv_override else os.path.join(split_dir, "train.csv")

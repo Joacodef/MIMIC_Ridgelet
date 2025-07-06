@@ -1,6 +1,7 @@
 # src/data/transforms.py
 import numpy as np
 import torch
+
 from monai.transforms import MapTransform
 from src.ridgelet.frt import FRT
 
@@ -10,17 +11,22 @@ class RidgeletTransformd(MapTransform):
     to an image. This version uses a local FRT implementation.
     """
 
-    def __init__(self, keys, allow_missing_keys: bool = False):
+    def __init__(self, keys, threshold_ratio: float = 0.0, allow_missing_keys: bool = False):
         """
         Initializes the transform.
 
         Args:
             keys (list): A list of keys corresponding to the image data in the input dictionary.
+            threshold_ratio (float): The ratio (0.0 to 1.0) for thresholding
+                the wavelet coefficients. Defaults to 0.0 (no thresholding).
             allow_missing_keys (bool): If True, the transform will not raise an error
                                        if a key is missing from the input dictionary.
         """
         super().__init__(keys, allow_missing_keys)
         self.frt = FRT(wavelet='db4')
+        if not 0.0 <= threshold_ratio <= 1.0:
+            raise ValueError("threshold_ratio must be between 0.0 and 1.0.")
+        self.threshold_ratio = threshold_ratio
 
     def __call__(self, data):
         """
@@ -40,7 +46,7 @@ class RidgeletTransformd(MapTransform):
                 if not isinstance(img_tensor, torch.Tensor):
                     raise TypeError("Input must be a PyTorch tensor.")
                 
-                # **Corrected line**: Use squeeze() to remove all singleton dimensions
+                # Use squeeze() to remove all singleton dimensions
                 # (batch and channel) to get a 2D array.
                 img_np = img_tensor.cpu().numpy().squeeze()
                 original_size = img_np.shape[0]
@@ -48,8 +54,8 @@ class RidgeletTransformd(MapTransform):
                 if img_np.ndim != 2 or img_np.shape[0] != img_np.shape[1]:
                     raise ValueError(f"Image must be a 2D square array for the FRT. Got shape {img_np.shape}.")
 
-                # 1. Apply the forward and inverse Ridgelet transforms
-                coeffs = self.frt.forward(img_np)
+                # 1. Apply the forward and inverse Ridgelet transforms, passing the threshold ratio.
+                coeffs = self.frt.forward(img_np, self.threshold_ratio)
                 reconstructed_img = self.frt.inverse(coeffs)
 
                 # 2. Corrected Resizing Logic: Center-crop or pad the reconstructed
@@ -78,8 +84,8 @@ class RidgeletTransformd(MapTransform):
                     reconstructed_img = reconstructed_img[crop_top:crop_bottom, crop_left:crop_right]
 
                 if reconstructed_img.shape != (original_size, original_size):
-                     from skimage.transform import resize
-                     reconstructed_img = resize(reconstructed_img, (original_size, original_size), anti_aliasing=True)
+                      from skimage.transform import resize
+                      reconstructed_img = resize(reconstructed_img, (original_size, original_size), anti_aliasing=True)
 
                 # Convert back to a tensor and restore the channel dimension
                 transformed_tensor = torch.from_numpy(reconstructed_img).float().unsqueeze(0)

@@ -17,6 +17,7 @@ class DataConfig:
     split_folder_name: str
     image_size: int = 256
     augmentations: AugmentationConfig = field(default_factory=AugmentationConfig)
+    use_ridgelet: bool = False
 
 @dataclass
 class DataLoaderConfig:
