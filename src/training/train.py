@@ -9,6 +9,7 @@ from sklearn.metrics import roc_auc_score
 import shutil
 from datetime import datetime
 from dataclasses import asdict
+from typing import Optional
 
 import wandb
 
@@ -73,7 +74,14 @@ def validate(model, val_loader, criterion, device):
     
     return val_loss, val_auc
 
-def run_training(config: AppConfig, config_path: str, resume_dir=None, resume_from="last"):
+def run_training(
+    config: AppConfig, 
+    config_path: str, 
+    resume_dir: Optional[str] = None, 
+    resume_from: str = "last",
+    train_csv_override: Optional[str] = None,
+    output_dir_override: Optional[str] = None
+) -> tuple[float, str]:
     """
     Main function to run the training pipeline.
     This function is designed to be called by both the CLI and other scripts.
@@ -109,7 +117,8 @@ def run_training(config: AppConfig, config_path: str, resume_dir=None, resume_fr
     ])
 
     split_dir = os.path.join(PROJECT_DATA_FOLDER_PATH, "splits", config.data.split_folder_name)
-    train_csv = os.path.join(split_dir, "train.csv")
+    train_csv = train_csv_override if train_csv_override else os.path.join(split_dir, "train.csv")
+    print(f"Using training data from: {train_csv}")
     val_csv = os.path.join(split_dir, "validation.csv")
 
     train_dataset = CXRFractureDataset(csv_path=train_csv, image_root_dir=IMAGE_ROOT_DIR, transform=train_transforms)
@@ -161,7 +170,13 @@ def run_training(config: AppConfig, config_path: str, resume_dir=None, resume_fr
     patience = config.training.early_stopping_patience
     output_model_name = config.training.output_model_name
 
-    if resume_dir:
+    if output_dir_override:
+        output_run_dir = output_dir_override
+        os.makedirs(output_run_dir, exist_ok=True)
+        # We don't resume when an override is given, it's a fresh run in a specific dir
+        print(f"Using provided output directory: {output_run_dir}")
+        shutil.copy(config_path, os.path.join(output_run_dir, 'config.yaml'))
+    elif resume_dir:
         output_run_dir = resume_dir
         checkpoint_filename = "last_model.pth" if resume_from == "last" else config.training.output_model_name
         checkpoint_path = os.path.join(output_run_dir, checkpoint_filename)
@@ -250,8 +265,8 @@ def run_training(config: AppConfig, config_path: str, resume_dir=None, resume_fr
     if config.wandb.enabled:
         wandb.finish()
 
-    # Return the best validation AUC achieved during the run
-    return best_val_auc
+    # Return a tuple of the best metric and the output directory
+    return (best_val_auc, output_run_dir)
 
 #  Main function dedicated to parsing CLI arguments
 def main():
