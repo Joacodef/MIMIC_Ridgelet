@@ -28,19 +28,31 @@ class LossConfig:
     """Configuration for the loss function."""
     name: str = "FocalLoss" # Options: "FocalLoss", "BCEWithLogitsLoss"
     gamma: float = 2.0 # The gamma parameter for FocalLoss
+    alpha: Optional[float] = None
 
 @dataclass
 class ModelConfig:
     base_model: str = "resnet18"
 
 @dataclass
+class SchedulerConfig:
+    """Configuration for the learning rate scheduler."""
+    name: str = "ReduceLROnPlateau"
+    # Factor by which the learning rate will be reduced. new_lr = lr * factor.
+    factor: float = 0.1
+    # Number of epochs with no improvement after which learning rate will be reduced.
+    patience: int = 5
+
+@dataclass
 class TrainingConfig:
     optimizer: str = "Adam"
     epochs: int = 50
     learning_rate: float = 0.001
+    weight_decay: float = 1e-5
     early_stopping_patience: int = 10
     output_model_name: str = "best_model.pth"
     loss: LossConfig = field(default_factory=LossConfig)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
 
 @dataclass
 class WandbConfig:

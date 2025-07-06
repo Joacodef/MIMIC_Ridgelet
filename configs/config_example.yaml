@@ -29,6 +29,11 @@ training:
   loss:
     name: "FocalLoss" # Options: "FocalLoss", "BCEWithLogitsLoss"
     gamma: 2.0
+    alpha: null # Or a value like 0.75
+  scheduler:
+    name: "ReduceLROnPlateau"
+    factor: 0.1
+    patience: 5
 
 wandb:
   enabled: true
