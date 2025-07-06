@@ -45,7 +45,6 @@ class FRT:
             
             threshold = threshold_ratio * max_val
 
-            # **Corrected line:** Use soft thresholding for cleaner results.
             for proj_coeffs in coeffs:
                 for i in range(1, len(proj_coeffs)):
                     proj_coeffs[i] = pywt.threshold(proj_coeffs[i], threshold, mode='soft')

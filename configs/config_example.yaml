@@ -25,6 +25,7 @@ training:
   optimizer: "Adam" # Can be "Adam" or "SGD", for example
   epochs: 50
   learning_rate: 0.001
+  weight_decay: 1e-5
   early_stopping_patience: 10 # Number of epochs to wait for improvement before stopping
   output_model_name: "best_model.pth" # Filename for the saved model
   loss:
