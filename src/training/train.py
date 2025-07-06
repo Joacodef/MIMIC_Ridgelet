@@ -7,6 +7,9 @@ from dotenv import load_dotenv
 from sklearn.metrics import roc_auc_score
 import shutil
 from datetime import datetime
+from dataclasses import asdict
+
+import wandb
 
 from monai.data import DataLoader
 from monai.transforms import Compose, LoadImaged, EnsureChannelFirstd, ScaleIntensityRanged, Resized, RandFlipd, RandAffined
@@ -198,6 +201,16 @@ def main(config_path, resume_dir=None, resume_from="last"):
         print(f"Starting new training run. Saving artifacts to: {output_run_dir}")
         shutil.copy(config_path, os.path.join(output_run_dir, 'config.yaml'))
 
+    if config.wandb.enabled:
+        run_name = os.path.basename(output_run_dir)
+        wandb.init(
+            project=config.wandb.project,
+            entity=config.wandb.entity,
+            name=run_name,
+            config=asdict(config)
+        )
+        print("Weights & Biases logging enabled.")
+
     best_model_path = os.path.join(output_run_dir, output_model_name)
 
     print("--- Starting Training ---")
@@ -208,6 +221,14 @@ def main(config_path, resume_dir=None, resume_from="last"):
         val_loss, val_auc = validate(model, val_loader, criterion, device)
         
         print(f"Epoch Summary: Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val AUC: {val_auc:.4f}")
+
+        if config.wandb.enabled:
+            wandb.log({
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "validation_loss": val_loss,
+                "validation_auc": val_auc,
+            })
         
         # --- 6. Model Checkpoint Creation ---
         # Create checkpoint dictionary on every epoch
@@ -242,6 +263,9 @@ def main(config_path, resume_dir=None, resume_from="last"):
     print("\n--- Training Complete ---")
     print(f"Finished training. Best validation loss achieved: {best_val_loss:.4f}")
     print(f"Best model saved to: {best_model_path}")
+
+    if config.wandb.enabled:
+        wandb.finish()
 
 
 if __name__ == "__main__":

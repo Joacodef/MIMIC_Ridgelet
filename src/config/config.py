@@ -1,6 +1,6 @@
 import yaml
 from dataclasses import dataclass, field, is_dataclass
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # --- Configuration Data Classes ---
 
@@ -36,11 +36,19 @@ class TrainingConfig:
     output_model_name: str = "best_model.pth"
 
 @dataclass
+class WandbConfig:
+    """Configuration for Weights & Biases integration."""
+    enabled: bool
+    project: str
+    entity: Optional[str]
+
+@dataclass
 class AppConfig:
     data: DataConfig
     dataloader: DataLoaderConfig
     model: ModelConfig
     training: TrainingConfig
+    wandb: WandbConfig
 
 # --- Configuration Loader ---
 
