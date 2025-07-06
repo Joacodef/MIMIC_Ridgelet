@@ -105,7 +105,7 @@ The script will log progress to the console. Trained models and the configuratio
 
 The following features and experiments are planned for future development:
 
-* [ ] **Shearlet Transform Integration**: Implement the Shearlet transform as a preprocessing layer applied before the model's first convolutional layer.
+* [ ] **Ridgelet Transform Integration**: Implement the Shearlet transform as a preprocessing layer applied before the model's first convolutional layer.
 * [ ] **Comparative Analysis**: Rigorously evaluate and compare model performance (AUC, F1-score, Precision, Recall) with and without Shearlet preprocessing.
 * [ ] **Advanced Models**: Experiment with other modern CNN architectures.
 * [ ] **Inference Script**: Create a script to run inference on new, unseen images using a saved model checkpoint.
