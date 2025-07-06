@@ -1,6 +1,6 @@
-# MIMIC-CXR Fracture Detection with Shearlet Preprocessing
+# MIMIC-CXR Fracture Detection with Ridgelet Preprocessing
 
-This project explores the use of deep learning for the binary classification of fractures in chest X-ray images from the **MIMIC-CXR-JPG dataset**. The primary scientific goal is to investigate the effectiveness of the **Shearlet Transform** as a preprocessing technique to enhance feature extraction and potentially improve classification performance.
+This project explores the use of deep learning for the binary classification of fractures in chest X-ray images from the **MIMIC-CXR-JPG dataset**. The primary scientific goal is to investigate the effectiveness of the **Ridgelet Transform** as a preprocessing technique to enhance feature extraction and potentially improve classification performance.
 
 The current implementation provides a complete baseline pipeline using a ResNet-based architecture.
 
@@ -105,7 +105,7 @@ The script will log progress to the console. Trained models and the configuratio
 
 The following features and experiments are planned for future development:
 
-* [ ] **Ridgelet Transform Integration**: Implement the Shearlet transform as a preprocessing layer applied before the model's first convolutional layer.
-* [ ] **Comparative Analysis**: Rigorously evaluate and compare model performance (AUC, F1-score, Precision, Recall) with and without Shearlet preprocessing.
+* [ ] **Ridgelet Transform Integration**: Implement the Ridgelet transform as a preprocessing layer applied before the model's first convolutional layer.
+* [ ] **Comparative Analysis**: Rigorously evaluate and compare model performance (AUC, F1-score, Precision, Recall) with and without Ridgelet preprocessing.
 * [ ] **Advanced Models**: Experiment with other modern CNN architectures.
 * [ ] **Inference Script**: Create a script to run inference on new, unseen images using a saved model checkpoint.
