@@ -1,6 +1,7 @@
 wandb/
 
-
+configs/*
+!configs/*_example.yaml
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -12,6 +12,7 @@ from dataclasses import asdict
 import wandb
 
 from monai.data import DataLoader
+from monai.losses import FocalLoss
 from monai.transforms import Compose, LoadImaged, EnsureChannelFirstd, ScaleIntensityRanged, Resized, RandFlipd, RandAffined
 
 from ..models.model import FractureDetector
@@ -137,7 +138,17 @@ def main(config_path, resume_dir=None, resume_from="last"):
     # --- 4. Model, Loss, Optimizer ---
     print("Initializing model, criterion, and optimizer...")
     model = FractureDetector(base_model_name=config.model.base_model).to(device)
-    criterion = nn.BCEWithLogitsLoss()
+    
+    # Initialize loss function based on the configuration
+    loss_config = config.training.loss
+    if loss_config.name.lower() == 'focalloss':
+        print(f"Using Focal Loss with gamma={loss_config.gamma}")
+        criterion = FocalLoss(gamma=loss_config.gamma)
+    elif loss_config.name.lower() == 'bcewithlogitsloss':
+        print("Using BCEWithLogitsLoss")
+        criterion = nn.BCEWithLogitsLoss()
+    else:
+        raise ValueError(f"Loss function '{loss_config.name}' is not supported.")
 
     # Select optimizer from config
     optimizer_name = config.training.optimizer.lower()

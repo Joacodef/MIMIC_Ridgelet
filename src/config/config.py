@@ -24,6 +24,12 @@ class DataLoaderConfig:
     num_workers: int = 4
 
 @dataclass
+class LossConfig:
+    """Configuration for the loss function."""
+    name: str = "FocalLoss" # Options: "FocalLoss", "BCEWithLogitsLoss"
+    gamma: float = 2.0 # The gamma parameter for FocalLoss
+
+@dataclass
 class ModelConfig:
     base_model: str = "resnet18"
 
@@ -34,6 +40,7 @@ class TrainingConfig:
     learning_rate: float = 0.001
     early_stopping_patience: int = 10
     output_model_name: str = "best_model.pth"
+    loss: LossConfig = field(default_factory=LossConfig)
 
 @dataclass
 class WandbConfig:
