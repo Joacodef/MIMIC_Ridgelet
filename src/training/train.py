@@ -198,7 +198,13 @@ def run_training(
             DeleteItemsd(keys=[transform_output_key])
         )
 
-        # --- Create final pipelines for training and validation ---
+    if config.data.transform_name:
+        channel_info = "multi-channel (2 channels)" if config.data.multichannel else "single-channel (1 channel)"
+        print(f"INFO: Using '{config.data.transform_name}' transform in {channel_info} mode.")
+    else:
+        print("INFO: No special transform applied. Using original grayscale image (1 channel).")
+        
+    # --- Create final pipelines for training and validation ---
     val_transforms = Compose(base_transforms_list)
     train_transforms_list = base_transforms_list + [
         RandFlipd(keys=["image"], prob=augs.rand_flip_prob, spatial_axis=0),
