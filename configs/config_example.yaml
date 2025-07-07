@@ -4,7 +4,7 @@
 data:
   split_folder_name: "split_2000"
   image_size: 256 # Used for resizing images
-  use_ridgelet: false
+  transform_name: null # Can be 'ridgelet', 'haar', or null
   augmentations:
     rand_flip_prob: 0.5
     rand_affine_prob: 0.5

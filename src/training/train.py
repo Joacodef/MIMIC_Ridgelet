@@ -25,7 +25,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config.config import load_config, AppConfig
 from data.dataset import CXRFractureDataset
 from models.model import FractureDetector
-from data.transforms import RidgeletTransformd
+from data.transforms import RidgeletTransformd, HaarTransformd
 
 
 def train_one_epoch(model, train_loader, optimizer, criterion, device):
@@ -125,21 +125,29 @@ def run_training(
     # --- 3. Data Preparation ---
     print("Setting up data pipelines...")
     augs = config.data.augmentations
-    
+
+    # Define transforms that are ALWAYS applied.
+    # Resized is moved here to be applied unconditionally and before custom transforms.
     base_transforms_list = [
         LoadImaged(keys=["image"]),
         EnsureChannelFirstd(keys=["image"]),
         ScaleIntensityRanged(keys=["image"], a_min=0.0, a_max=255.0, b_min=0.0, b_max=1.0, clip=True),
+        Resized(keys=["image"], spatial_size=(config.data.image_size, config.data.image_size)),
     ]
 
-    if config.data.use_ridgelet:
-        print("INFO: Ridgelet transform will be applied.")
-        base_transforms_list.append(RidgeletTransformd(keys=["image"]))
+    # --- Apply custom transform based on config (if any) ---
+    if config.data.transform_name:
+        transform_name = config.data.transform_name.lower()
+        print(f"INFO: Applying '{transform_name}' transform.")
+        
+        if transform_name == 'ridgelet':
+            base_transforms_list.append(RidgeletTransformd(keys=["image"], threshold_ratio=0.1))
+        elif transform_name == 'haar':
+            base_transforms_list.append(HaarTransformd(keys=["image"], threshold_ratio=0.1))
+        else:
+            raise ValueError(f"Unknown transform name specified in config: '{config.data.transform_name}'")
 
-    base_transforms_list.append(
-        Resized(keys=["image"], spatial_size=(config.data.image_size, config.data.image_size))
-    )
-
+    # --- Create final pipelines for training and validation ---
     val_transforms = Compose(base_transforms_list)
     train_transforms_list = base_transforms_list + [
         RandFlipd(keys=["image"], prob=augs.rand_flip_prob, spatial_axis=0),
