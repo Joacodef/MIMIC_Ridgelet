@@ -88,20 +88,31 @@ class AppConfig:
 
 # --- Configuration Loader ---
 
-def _from_dict(data_class: Any, data: dict) -> Any:
+def _from_dict(data_class: Any, data: Any) -> Any:
     """
-    Recursively creates a dataclass instance from a dictionary.
+    Recursively and robustly creates a dataclass instance from a dictionary,
+    ensuring type conversions for primitive types.
     """
     if not is_dataclass(data_class):
-        return data
+        # This handles primitive types at the end of the recursion.
+        # It attempts to cast the data to the specified type.
+        # e.g., calling float('1e-5')
+        try:
+            return data_class(data)
+        except (TypeError, ValueError):
+            # If casting fails, it's likely a complex type like List.
+            # In that case, we return the data as is.
+            return data
 
+    # This handles the case where the data_class is a dataclass.
     field_types = {f.name: f.type for f in data_class.__dataclass_fields__.values()}
     
     init_args = {}
-    for key, value in data.items():
-        if key in field_types:
-            # Recursively call _from_dict for nested dataclasses
-            init_args[key] = _from_dict(field_types[key], value)
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key in field_types:
+                # Recursively call _from_dict for the field's type and value
+                init_args[key] = _from_dict(field_types[key], value)
     
     return data_class(**init_args)
 

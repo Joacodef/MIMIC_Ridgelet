@@ -14,7 +14,7 @@ import sys
 
 import wandb
 
-from monai.data import DataLoader
+from monai.data import DataLoader, CacheDataset
 from monai.losses import FocalLoss
 from monai.transforms import (
     Compose,
@@ -24,8 +24,7 @@ from monai.transforms import (
     CopyItemsd,     
     DeleteItemsd, 
     Resized, 
-    RandFlipd, 
-    RandAffined
+    RandAffine
 )
 
 # Add project root to path to allow absolute imports
@@ -38,7 +37,7 @@ from models.model import FractureDetector
 from data.transforms import RidgeletTransformd, HaarTransformd, ConcatenateChannelsd
 
 
-def train_one_epoch(model, train_loader, optimizer, criterion, device):
+def train_one_epoch(model, train_loader, optimizer, criterion, device, augment_fn=None):
     """Performs one full training epoch."""
     model.train()
     running_loss = 0.0
@@ -47,6 +46,11 @@ def train_one_epoch(model, train_loader, optimizer, criterion, device):
     for batch_data in progress_bar:
         images = batch_data["image"].to(device)
         labels = batch_data["label"].to(device).float().unsqueeze(1)
+
+        # Apply GPU augmentations if provided
+        if augment_fn:
+            # Apply the transform to each image in the batch individually and stack them back together
+            images = torch.stack([augment_fn(image) for image in images])
 
         optimizer.zero_grad()
         
@@ -133,103 +137,88 @@ def run_training(
         raise
 
     # --- 3. Data Preparation ---
-    print("Setting up data pipelines...")
+    print("Setting up data pipelines with in-memory caching...")
     augs = config.data.augmentations
 
-    # Define the key for the transformed image output
-    transform_output_key = "image_transformed"
-
-    input_channels = 1 # Default for grayscale images (no special transform or ridgelet/haar_reconstructed)
-
-    # Define transforms that are ALWAYS applied.
-    # Resized is moved here to be applied unconditionally and before custom transforms.
-    base_transforms_list = [
+    # Define transforms that are ALWAYS applied before caching (heavy, deterministic)
+    pre_cache_transforms_list = [
         LoadImaged(keys=["image"]),
         EnsureChannelFirstd(keys=["image"]),
         ScaleIntensityRanged(keys=["image"], a_min=0.0, a_max=255.0, b_min=0.0, b_max=1.0, clip=True),
         Resized(keys=["image"], spatial_size=(config.data.image_size, config.data.image_size)),
     ]
 
-    # Select the primary transform based on the configuration
+    # Define the key for the transformed image output
+    transform_output_key = "image_transformed"
+
+    # Add the special transform (Haar/Ridgelet) to the pre-cache list
     if config.data.transform_name == 'ridgelet':
-    # Get the ridgelet-specific parameters as a dictionary
         ridgelet_params = asdict(config.data.transform_params.ridgelet)
-        base_transforms_list.append(
-            RidgeletTransformd(
-                keys=["image"],
-                output_key=transform_output_key,
-                threshold_ratio=config.data.transform_threshold_ratio,
-                **ridgelet_params
-            )
-        )
+        pre_cache_transforms_list.append(RidgeletTransformd(keys=["image"], output_key=transform_output_key, threshold_ratio=config.data.transform_threshold_ratio, **ridgelet_params))
     elif config.data.transform_name == 'haar':
-        # Get the Haar-specific parameters as a dictionary
         haar_params = asdict(config.data.transform_params.haar)
-        base_transforms_list.append(
-            HaarTransformd(
-                keys=["image"],
-                output_key=transform_output_key,
-                threshold_ratio=config.data.transform_threshold_ratio,
-                **haar_params
-            )
-        )
-    elif config.data.transform_name is not None:
-        raise ValueError(f"Unknown transform name specified in config: '{config.data.transform_name}'")
+        pre_cache_transforms_list.append(HaarTransformd(keys=["image"], output_key=transform_output_key, threshold_ratio=config.data.transform_threshold_ratio, **haar_params))
 
-
-
-   # If a transform was applied, add logic for multichannel or single channel output
+    # Add multichannel logic to the pre-cache list and determine input channels
     if config.data.transform_name is not None:
         if config.data.multichannel:
-            # Concatenate original and transformed images for a 2-channel input
-            base_transforms_list.append(
-                ConcatenateChannelsd(keys=["image", transform_output_key], output_key="image")
-            )
+            pre_cache_transforms_list.append(ConcatenateChannelsd(keys=["image", transform_output_key], output_key="image"))
             input_channels = 2
         else:
-            # Overwrite the original image with the transformed one using CopyItemsd
-            base_transforms_list.extend([
+            pre_cache_transforms_list.extend([
                 DeleteItemsd(keys=["image"]),
                 CopyItemsd(keys=[transform_output_key], names=["image"]),
             ])
-
-        # Clean up the intermediate transformed image key using DeleteItemsd
-        base_transforms_list.append(
-            DeleteItemsd(keys=[transform_output_key])
-        )
-
-    if config.data.transform_name:
-        channel_info = "multi-channel (2 channels)" if config.data.multichannel else "single-channel (1 channel)"
-        print(f"INFO: Using '{config.data.transform_name}' transform in {channel_info} mode.")
+            input_channels = 1
+        pre_cache_transforms_list.append(DeleteItemsd(keys=[transform_output_key]))
     else:
-        print("INFO: No special transform applied. Using original grayscale image (1 channel).")
-        
-    # --- Create final pipelines for training and validation ---
-    val_transforms = Compose(base_transforms_list)
-    train_transforms_list = base_transforms_list + [
-        RandFlipd(keys=["image"], prob=augs.rand_flip_prob, spatial_axis=0),
-        RandAffined(
-            keys=["image"], prob=augs.rand_affine_prob,
-            rotate_range=(augs.rotate_range), scale_range=(augs.scale_range)
-        )
-    ]
-    train_transforms = Compose(train_transforms_list)
+        input_channels = 1
 
+    pre_cache_transforms = Compose(pre_cache_transforms_list)
+
+    # --- Create Base Datasets ---
+    # The base dataset is now responsible for loading and applying the heavy transforms once
     split_dir = os.path.join(PROJECT_DATA_FOLDER_PATH, "splits", config.data.split_folder_name)
     train_csv = train_csv_override if train_csv_override else os.path.join(split_dir, "train.csv")
+    val_csv = os.path.join(split_dir, "validation.csv")
     print(f"Using training data from: {train_csv}")
 
-    val_csv = os.path.join(split_dir, "validation.csv")
+    base_train_dataset = CXRFractureDataset(csv_path=train_csv, image_root_dir=IMAGE_ROOT_DIR, transform=pre_cache_transforms)
+    base_val_dataset = CXRFractureDataset(csv_path=val_csv, image_root_dir=IMAGE_ROOT_DIR, transform=pre_cache_transforms)
 
-    train_dataset = CXRFractureDataset(csv_path=train_csv, image_root_dir=IMAGE_ROOT_DIR, transform=train_transforms)
-    val_dataset = CXRFractureDataset(csv_path=val_csv, image_root_dir=IMAGE_ROOT_DIR, transform=val_transforms)
+    # --- Wrap with CacheDataset for In-Memory Caching ---
+    # TUNE THIS VALUE based on your available system RAM.
+    # Start with a lower value like 0.25 and increase if you have enough memory.
+    RAM_CACHE_RATE = 1.0
+    print(f"Initializing in-memory CacheDataset with cache_rate={RAM_CACHE_RATE}. This may take a while on the first run...")
 
-    # Access dataloader config
-    train_loader = DataLoader(train_dataset, batch_size=config.dataloader.batch_size, shuffle=True, num_workers=config.dataloader.num_workers)
-    val_loader = DataLoader(val_dataset, batch_size=config.dataloader.batch_size, shuffle=False, num_workers=config.dataloader.num_workers)
+    train_dataset = CacheDataset(
+        data=base_train_dataset,
+        cache_rate=RAM_CACHE_RATE,
+        num_workers=config.dataloader.num_workers
+    )
+    val_dataset = CacheDataset(
+        data=base_val_dataset,
+        cache_rate=RAM_CACHE_RATE,
+        num_workers=config.dataloader.num_workers
+    )
+
+    # --- Create DataLoaders ---
+    dl_config = config.dataloader
+    train_loader = DataLoader(train_dataset, batch_size=dl_config.batch_size, shuffle=True, num_workers=dl_config.num_workers, pin_memory=True, persistent_workers=True)
+    val_loader = DataLoader(val_dataset, batch_size=dl_config.batch_size, shuffle=False, num_workers=dl_config.num_workers, pin_memory=True, persistent_workers=True)
 
     # --- 4. Model, Loss, Optimizer ---
     print("Initializing model, criterion, and optimizer...")
+
+    print("Initializing GPU-based augmentations...")
+    gpu_augmentations = RandAffine(
+        prob=config.data.augmentations.rand_affine_prob,
+        rotate_range=config.data.augmentations.rotate_range,
+        scale_range=config.data.augmentations.scale_range,
+        device=device  # This assigns the transform to the GPU
+    )
+    
     model = FractureDetector(base_model_name=config.model.base_model, in_channels=input_channels).to(device)
     
     loss_config = config.training.loss
@@ -281,7 +270,7 @@ def run_training(
         for epoch in range(start_epoch, config.training.epochs):
             print(f"\nEpoch {epoch + 1}/{config.training.epochs}")
             
-            train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
+            train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, augment_fn=gpu_augmentations)
             val_loss, val_auc = validate(model, val_loader, criterion, device)
 
             if scheduler:
