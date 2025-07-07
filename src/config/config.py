@@ -1,6 +1,6 @@
 import yaml
 from dataclasses import dataclass, field, is_dataclass
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 # --- Configuration Data Classes ---
 
@@ -13,6 +13,17 @@ class AugmentationConfig:
     scale_range: float = 0.1
 
 @dataclass
+class HaarTransformConfig:
+    """Configuration specific to the Haar Transform."""
+    levels: int = 1
+    details_to_keep: List[str] = field(default_factory=lambda: ["HL", "VL", "DL"])
+
+@dataclass
+class TransformParams:
+    """Container for specific transform parameters."""
+    haar: HaarTransformConfig = field(default_factory=HaarTransformConfig)
+
+@dataclass
 class DataConfig:
     split_folder_name: str
     image_size: int = 256
@@ -20,6 +31,7 @@ class DataConfig:
     transform_name: Optional[str] = None
     transform_threshold_ratio: float = 0.1
     multichannel: bool = False
+    transform_params: TransformParams = field(default_factory=TransformParams)
 
 @dataclass
 class DataLoaderConfig:

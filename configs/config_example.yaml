@@ -4,8 +4,14 @@
 data:
   split_folder_name: "split_2000"
   image_size: 256 # Used for resizing images
-  transform_name: null # Can be 'ridgelet', 'haar_reconstructed', 'haar_multichannel', or null
+  transform_name: null # Can be 'haar', 'ridgelet', or null
   transform_threshold_ratio: 0.1 # Parameter for applicable transforms (e.g., RidgeletTransformd, HaarTransformd)
+  transform_params:
+    haar:
+      # Number of decomposition levels
+      levels: 1
+      # Details to keep. Options: "HL", "VL", "DL"
+      details_to_keep: ["HL", "VL", "DL"]
   multichannel: false # If true, the model receives both original and transformed images as input
   augmentations:
     rand_flip_prob: 0.5

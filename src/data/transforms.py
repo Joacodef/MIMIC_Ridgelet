@@ -101,70 +101,82 @@ class RidgeletTransformd(MapTransform):
 
 class HaarTransformd(MapTransform):
     """
-    Applies a 2D Haar wavelet transform for denoising via coefficient
-    thresholding, followed by an inverse transform to reconstruct the image.
-    This process is analogous to the provided RidgeletTransformd.
-    Returns both the original and the reconstructed Haar image.
+    Applies a multi-level Haar wavelet transform, with corrected logic for
+    thresholding and selective reconstruction from specified sub-bands.
     """
-    def __init__(self, keys: Hashable | list[Hashable] = "image", threshold_ratio: float = 0.1, allow_missing_keys: bool = False):
+    def __init__(
+        self,
+        keys: List[str],
+        output_key: str,
+        threshold_ratio: float = 0.0,
+        levels: int = 1,
+        details_to_keep: List[str] = None, # Now defaults to None
+        allow_missing_keys: bool = False,
+    ):
         super().__init__(keys, allow_missing_keys)
-        if not 0.0 <= threshold_ratio <= 1.0:
-            raise ValueError("threshold_ratio must be between 0.0 and 1.0.")
+        self.output_key = output_key
         self.threshold_ratio = threshold_ratio
+        self.levels = levels
+        # Default to keeping ALL bands if none are specified
+        self.details_to_keep = details_to_keep if details_to_keep is not None else ["LL", "HL", "LH", "HH"]
+        # Detail map now includes the approximation band "LL"
+        self.detail_map = {"HL": 0, "LH": 1, "HH": 2}
 
     def __call__(self, data: Mapping[Hashable, Any]) -> Dict[Hashable, Any]:
         d = dict(data)
         for key in self.keys:
-            if key in d:
-                img_tensor = d[key]
+            if key not in d:
+                continue
+
+            image_tensor = d[key]
+            image_np = image_tensor.cpu().numpy().squeeze()
+            original_shape = image_np.shape
+
+            # 1. Decompose
+            coeffs = pywt.wavedec2(image_np, 'haar', level=self.levels)
+
+            # 2. Thresholding (Corrected to only apply to detail coefficients)
+            if self.threshold_ratio > 0.0:
+                detail_coeffs_flat = np.concatenate([np.ravel(detail) for level in coeffs[1:] for detail in level])
+                if detail_coeffs_flat.size > 0:
+                    threshold_value = np.percentile(np.abs(detail_coeffs_flat), self.threshold_ratio * 100)
+                else:
+                    threshold_value = 0
                 
-                # Store the original image tensor for multi-channel output
-                original_img_tensor = img_tensor.clone()
+                thresholded_coeffs = [coeffs[0]]
+                for level_details in coeffs[1:]:
+                    thresholded_coeffs.append(tuple(pywt.threshold(detail, threshold_value, mode='soft') for detail in level_details))
+                coeffs = thresholded_coeffs
 
-                img_np = img_tensor.cpu().numpy().squeeze()
-                original_shape = img_np.shape
+            # 3. CORRECTED: Create a template with ALL components zeroed out
+            recon_coeffs = [np.zeros_like(coeffs[0])] + [
+                tuple(np.zeros_like(detail) for detail in level_details)
+                for level_details in coeffs[1:]
+            ]
 
-                # 1. Apply the forward 2D Haar wavelet transform
-                coeffs = pywt.dwt2(img_np, 'haar')
-                ll, (lh, hl, hh) = coeffs
+            # 4. CORRECTED: Selectively copy both approximation AND details
+            if "LL" in self.details_to_keep:
+                recon_coeffs[0][:] = coeffs[0]
 
-                # 2. Threshold the detail coefficients (lh, hl, hh)
-                if self.threshold_ratio > 0:
-                    # Calculate a threshold value based on the maximum absolute value
-                    # of all detail coefficients to ensure a consistent threshold across bands.
-                    max_val_lh = np.max(np.abs(lh)) if lh.size > 0 else 0
-                    max_val_hl = np.max(np.abs(hl)) if hl.size > 0 else 0
-                    max_val_hh = np.max(np.abs(hh)) if hh.size > 0 else 0
-                    
-                    max_overall_detail_val = max(max_val_lh, max_val_hl, max_val_hh)
-                    
-                    if max_overall_detail_val > 0:
-                        threshold = self.threshold_ratio * max_overall_detail_val
-                    else:
-                        threshold = 0 # No details to threshold if all are zero
+            for level_idx, level_details in enumerate(coeffs[1:]):
+                for detail_name, detail_coeff_idx in self.detail_map.items():
+                    if detail_name in self.details_to_keep:
+                        recon_coeffs[level_idx + 1][detail_coeff_idx][:] = level_details[detail_coeff_idx]
+            
+            # 5. Reconstruct, resize, and normalize
+            reconstructed_img = pywt.waverec2(recon_coeffs, 'haar')
+            reconstructed_img = resize(reconstructed_img, original_shape, anti_aliasing=True)
 
-                    # Apply soft thresholding
-                    lh = pywt.threshold(lh, threshold, mode='soft')
-                    hl = pywt.threshold(hl, threshold, mode='soft')
-                    hh = pywt.threshold(hh, threshold, mode='soft')
+            min_val, max_val = np.min(reconstructed_img), np.max(reconstructed_img)
+            if max_val > min_val:
+                reconstructed_img = (reconstructed_img - min_val) / (max_val - min_val)
+            else:
+                reconstructed_img = np.zeros_like(reconstructed_img)
 
-                # 3. Apply the inverse transform to reconstruct the image
-                reconstructed_img = pywt.idwt2((ll, (lh, hl, hh)), 'haar')
-                
-                # 4. Resize to original dimensions to handle any minor size changes
-                # from the wavelet transform.
-                # Ensure the reconstructed image is within float type range before resizing
-                reconstructed_img = reconstructed_img.astype(np.float32)
-                reconstructed_img = resize(reconstructed_img, original_shape, anti_aliasing=True)
+            d[self.output_key] = torch.from_numpy(reconstructed_img).float().unsqueeze(0)
 
-                # 5. Convert reconstructed image back to a tensor and add channel dimension
-                transformed_tensor = torch.from_numpy(reconstructed_img).float().unsqueeze(0)
-                
-                # Update the dictionary with both original and transformed image
-                d[key] = original_img_tensor  # Keep original image under its key
-                d[f"{key}_haar"] = transformed_tensor # Add Haar transformed image under a new key
-                
         return d
+
 
 class ConcatenateChannelsd(MapTransform):
     """
