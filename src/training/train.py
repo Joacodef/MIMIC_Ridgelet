@@ -150,21 +150,27 @@ def run_training(
         Resized(keys=["image"], spatial_size=(config.data.image_size, config.data.image_size)),
     ]
 
-        # Select the primary transform based on the configuration
+    # Select the primary transform based on the configuration
     if config.data.transform_name == 'ridgelet':
+    # Get the ridgelet-specific parameters as a dictionary
+        ridgelet_params = asdict(config.data.transform_params.ridgelet)
         base_transforms_list.append(
             RidgeletTransformd(
                 keys=["image"],
                 output_key=transform_output_key,
-                threshold_ratio=config.data.transform_threshold
+                threshold_ratio=config.data.transform_threshold_ratio,
+                **ridgelet_params
             )
         )
     elif config.data.transform_name == 'haar':
+        # Get the Haar-specific parameters as a dictionary
+        haar_params = asdict(config.data.transform_params.haar)
         base_transforms_list.append(
             HaarTransformd(
                 keys=["image"],
                 output_key=transform_output_key,
-                threshold_ratio=config.data.transform_threshold
+                threshold_ratio=config.data.transform_threshold_ratio,
+                **haar_params
             )
         )
     elif config.data.transform_name is not None:
@@ -182,9 +188,10 @@ def run_training(
             input_channels = 2
         else:
             # Overwrite the original image with the transformed one using CopyItemsd
-            base_transforms_list.append(
-                CopyItemsd(keys=[transform_output_key], names=["image"])
-            )
+            base_transforms_list.extend([
+                DeleteItemsd(keys=["image"]),
+                CopyItemsd(keys=[transform_output_key], names=["image"]),
+            ])
 
         # Clean up the intermediate transformed image key using DeleteItemsd
         base_transforms_list.append(
