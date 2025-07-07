@@ -17,6 +17,8 @@ class HaarTransformConfig:
     """Configuration specific to the Haar Transform."""
     levels: int = 1
     details_to_keep: List[str] = field(default_factory=lambda: ["HL", "VL", "DL"])
+    unsharp_amount: Optional[float] = None
+    unsharp_sigma: float = 1.0
 
 @dataclass
 class TransformParams:

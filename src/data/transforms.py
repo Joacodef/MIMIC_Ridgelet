@@ -9,7 +9,8 @@ from skimage.transform import resize
 from monai.transforms import MapTransform
 from src.ridgelet.frt import FRT
 
-from typing import Dict, Any, Hashable, Mapping, List # Ensure List is imported
+from typing import Dict, Any, Hashable, Mapping, List, Optional # Ensure List is imported
+from scipy.ndimage import gaussian_filter
 
 class RidgeletTransformd(MapTransform):
     """
@@ -99,10 +100,14 @@ class RidgeletTransformd(MapTransform):
         return d
     
 
+
+
+
 class HaarTransformd(MapTransform):
     """
-    Applies a multi-level Haar wavelet transform, with corrected logic for
-    thresholding and selective reconstruction from specified sub-bands.
+    Applies a multi-level Haar wavelet transform. It reconstructs the image
+    from selected sub-bands and can optionally apply an Unsharp Mask filter to
+    the final reconstructed image for robust sharpening.
     """
     def __init__(
         self,
@@ -110,13 +115,31 @@ class HaarTransformd(MapTransform):
         output_key: str,
         threshold_ratio: float = 0.0,
         levels: int = 1,
-        details_to_keep: List[str] = None, # Now defaults to None
+        details_to_keep: Optional[List[str]] = None,
+        unsharp_amount: Optional[float] = None,
+        unsharp_sigma: float = 1.0,
         allow_missing_keys: bool = False,
     ):
+        """
+        Args:
+            keys: Keys of the data dictionary to apply the transform to.
+            output_key: Key for the output in the data dictionary.
+            threshold_ratio: Ratio for soft thresholding detail coefficients.
+            levels: Number of wavelet decomposition levels.
+            details_to_keep: List of sub-bands to keep for reconstruction.
+                Options: "LL", "HL", "LH", "HH". Defaults to all.
+            unsharp_amount: Scaling factor for the unsharp mask. If None or 0,
+                no sharpening is applied. Typical values are between 0.5 and 1.5.
+            unsharp_sigma: Standard deviation for the Gaussian blur used in
+                the unsharp mask. Controls the radius of the blurring effect.
+            allow_missing_keys: Don't raise exception if key is missing.
+        """
         super().__init__(keys, allow_missing_keys)
         self.output_key = output_key
         self.threshold_ratio = threshold_ratio
         self.levels = levels
+        self.unsharp_amount = unsharp_amount
+        self.unsharp_sigma = unsharp_sigma
         # Default to keeping ALL bands if none are specified
         self.details_to_keep = details_to_keep if details_to_keep is not None else ["LL", "HL", "LH", "HH"]
         # Detail map now includes the approximation band "LL"
@@ -132,10 +155,10 @@ class HaarTransformd(MapTransform):
             image_np = image_tensor.cpu().numpy().squeeze()
             original_shape = image_np.shape
 
-            # 1. Decompose
+            # 1. Decompose the original image
             coeffs = pywt.wavedec2(image_np, 'haar', level=self.levels)
 
-            # 2. Thresholding (Corrected to only apply to detail coefficients)
+            # 2. Thresholding
             if self.threshold_ratio > 0.0:
                 detail_coeffs_flat = np.concatenate([np.ravel(detail) for level in coeffs[1:] for detail in level])
                 if detail_coeffs_flat.size > 0:
@@ -148,13 +171,13 @@ class HaarTransformd(MapTransform):
                     thresholded_coeffs.append(tuple(pywt.threshold(detail, threshold_value, mode='soft') for detail in level_details))
                 coeffs = thresholded_coeffs
 
-            # 3. CORRECTED: Create a template with ALL components zeroed out
+            # 3. Create a template for reconstruction
             recon_coeffs = [np.zeros_like(coeffs[0])] + [
                 tuple(np.zeros_like(detail) for detail in level_details)
                 for level_details in coeffs[1:]
             ]
 
-            # 4. CORRECTED: Selectively copy both approximation AND details
+            # 4. Selectively copy desired coefficients
             if "LL" in self.details_to_keep:
                 recon_coeffs[0][:] = coeffs[0]
 
@@ -163,20 +186,31 @@ class HaarTransformd(MapTransform):
                     if detail_name in self.details_to_keep:
                         recon_coeffs[level_idx + 1][detail_coeff_idx][:] = level_details[detail_coeff_idx]
             
-            # 5. Reconstruct, resize, and normalize
+            # 5. Reconstruct and resize
             reconstructed_img = pywt.waverec2(recon_coeffs, 'haar')
             reconstructed_img = resize(reconstructed_img, original_shape, anti_aliasing=True)
 
+            # 6. Normalize the reconstructed image to [0, 1]
             min_val, max_val = np.min(reconstructed_img), np.max(reconstructed_img)
             if max_val > min_val:
-                reconstructed_img = (reconstructed_img - min_val) / (max_val - min_val)
+                processed_img = (reconstructed_img - min_val) / (max_val - min_val)
             else:
-                reconstructed_img = np.zeros_like(reconstructed_img)
+                processed_img = np.zeros_like(reconstructed_img)
 
-            d[self.output_key] = torch.from_numpy(reconstructed_img).float().unsqueeze(0)
+            # 7. Optional Unsharp Masking (applied AFTER normalization)
+            if self.unsharp_amount is not None and self.unsharp_amount > 0:
+                # Create a blurred version of the image
+                blurred_img = gaussian_filter(processed_img, sigma=self.unsharp_sigma)
+                # Create the mask by subtracting the blurred version from the original
+                mask = processed_img - blurred_img
+                # Add the scaled mask back to the original image
+                sharpened_image = processed_img + self.unsharp_amount * mask
+                # Clip the result to the valid [0, 1] range
+                processed_img = np.clip(sharpened_image, 0, 1)
+
+            d[self.output_key] = torch.from_numpy(processed_img).float().unsqueeze(0)
 
         return d
-
 
 class ConcatenateChannelsd(MapTransform):
     """
