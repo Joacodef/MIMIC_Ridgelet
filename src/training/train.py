@@ -25,7 +25,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config.config import load_config, AppConfig
 from data.dataset import CXRFractureDataset
 from models.model import FractureDetector
-from data.transforms import RidgeletTransformd, HaarTransformd
+from data.transforms import RidgeletTransformd, HaarTransformd, ConcatenateChannelsd
 
 
 def train_one_epoch(model, train_loader, optimizer, criterion, device):
@@ -126,6 +126,8 @@ def run_training(
     print("Setting up data pipelines...")
     augs = config.data.augmentations
 
+    input_channels = 1 # Default for grayscale images (no special transform or ridgelet/haar_reconstructed)
+
     # Define transforms that are ALWAYS applied.
     # Resized is moved here to be applied unconditionally and before custom transforms.
     base_transforms_list = [
@@ -140,10 +142,18 @@ def run_training(
         transform_name = config.data.transform_name.lower()
         print(f"INFO: Applying '{transform_name}' transform.")
         
+        transform_threshold = config.data.transform_threshold_ratio # Get the generic threshold
+
         if transform_name == 'ridgelet':
-            base_transforms_list.append(RidgeletTransformd(keys=["image"], threshold_ratio=0.1))
-        elif transform_name == 'haar':
-            base_transforms_list.append(HaarTransformd(keys=["image"], threshold_ratio=0.1))
+            base_transforms_list.append(RidgeletTransformd(keys=["image"], threshold_ratio=transform_threshold))
+        elif transform_name == 'haar_reconstructed': # For single channel Haar output
+            base_transforms_list.append(HaarTransformd(keys=["image"], threshold_ratio=transform_threshold))
+        elif transform_name == 'haar_multichannel':
+            # HaarTransformd will output 'image' (original) and 'image_haar' (transformed)
+            base_transforms_list.append(HaarTransformd(keys=["image"], threshold_ratio=transform_threshold))
+            # Concatenate the original and haar-transformed images
+            base_transforms_list.append(ConcatenateChannelsd(keys=["image", "image_haar"], output_key="image"))
+            input_channels = 2 # Set input channels to 2 for the model
         else:
             raise ValueError(f"Unknown transform name specified in config: '{config.data.transform_name}'")
 
@@ -161,19 +171,19 @@ def run_training(
     split_dir = os.path.join(PROJECT_DATA_FOLDER_PATH, "splits", config.data.split_folder_name)
     train_csv = train_csv_override if train_csv_override else os.path.join(split_dir, "train.csv")
     print(f"Using training data from: {train_csv}")
-    # Corrected the validation csv name to match common practice
+
     val_csv = os.path.join(split_dir, "validation.csv")
 
     train_dataset = CXRFractureDataset(csv_path=train_csv, image_root_dir=IMAGE_ROOT_DIR, transform=train_transforms)
     val_dataset = CXRFractureDataset(csv_path=val_csv, image_root_dir=IMAGE_ROOT_DIR, transform=val_transforms)
 
-    # Correctly access dataloader config
+    # Access dataloader config
     train_loader = DataLoader(train_dataset, batch_size=config.dataloader.batch_size, shuffle=True, num_workers=config.dataloader.num_workers)
     val_loader = DataLoader(val_dataset, batch_size=config.dataloader.batch_size, shuffle=False, num_workers=config.dataloader.num_workers)
 
     # --- 4. Model, Loss, Optimizer ---
     print("Initializing model, criterion, and optimizer...")
-    model = FractureDetector(base_model_name=config.model.base_model).to(device)
+    model = FractureDetector(base_model_name=config.model.base_model, in_channels=input_channels).to(device)
     
     loss_config = config.training.loss
     if loss_config.name.lower() == 'focalloss':

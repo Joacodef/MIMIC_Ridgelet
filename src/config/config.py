@@ -18,6 +18,7 @@ class DataConfig:
     image_size: int = 256
     augmentations: AugmentationConfig = field(default_factory=AugmentationConfig)
     transform_name: Optional[str] = None
+    transform_threshold_ratio: float = 0.1
 
 @dataclass
 class DataLoaderConfig:
