@@ -19,6 +19,7 @@ class DataConfig:
     augmentations: AugmentationConfig = field(default_factory=AugmentationConfig)
     transform_name: Optional[str] = None
     transform_threshold_ratio: float = 0.1
+    multichannel: bool = False
 
 @dataclass
 class DataLoaderConfig:

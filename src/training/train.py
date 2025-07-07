@@ -16,7 +16,17 @@ import wandb
 
 from monai.data import DataLoader
 from monai.losses import FocalLoss
-from monai.transforms import Compose, LoadImaged, EnsureChannelFirstd, ScaleIntensityRanged, Resized, RandFlipd, RandAffined
+from monai.transforms import (
+    Compose,
+    LoadImaged,
+    ScaleIntensityRanged,
+    EnsureChannelFirstd,
+    CopyItemsd,     
+    DeleteItemsd, 
+    Resized, 
+    RandFlipd, 
+    RandAffined
+)
 
 # Add project root to path to allow absolute imports
 import sys
@@ -126,6 +136,9 @@ def run_training(
     print("Setting up data pipelines...")
     augs = config.data.augmentations
 
+    # Define the key for the transformed image output
+    transform_output_key = "image_transformed"
+
     input_channels = 1 # Default for grayscale images (no special transform or ridgelet/haar_reconstructed)
 
     # Define transforms that are ALWAYS applied.
@@ -137,27 +150,48 @@ def run_training(
         Resized(keys=["image"], spatial_size=(config.data.image_size, config.data.image_size)),
     ]
 
-    # --- Apply custom transform based on config (if any) ---
-    if config.data.transform_name:
-        transform_name = config.data.transform_name.lower()
-        print(f"INFO: Applying '{transform_name}' transform.")
-        
-        transform_threshold = config.data.transform_threshold_ratio # Get the generic threshold
+        # Select the primary transform based on the configuration
+    if config.data.transform_name == 'ridgelet':
+        base_transforms_list.append(
+            RidgeletTransformd(
+                keys=["image"],
+                output_key=transform_output_key,
+                threshold_ratio=config.data.transform_threshold
+            )
+        )
+    elif config.data.transform_name == 'haar':
+        base_transforms_list.append(
+            HaarTransformd(
+                keys=["image"],
+                output_key=transform_output_key,
+                threshold_ratio=config.data.transform_threshold
+            )
+        )
+    elif config.data.transform_name is not None:
+        raise ValueError(f"Unknown transform name specified in config: '{config.data.transform_name}'")
 
-        if transform_name == 'ridgelet':
-            base_transforms_list.append(RidgeletTransformd(keys=["image"], threshold_ratio=transform_threshold))
-        elif transform_name == 'haar_reconstructed': # For single channel Haar output
-            base_transforms_list.append(HaarTransformd(keys=["image"], threshold_ratio=transform_threshold))
-        elif transform_name == 'haar_multichannel':
-            # HaarTransformd will output 'image' (original) and 'image_haar' (transformed)
-            base_transforms_list.append(HaarTransformd(keys=["image"], threshold_ratio=transform_threshold))
-            # Concatenate the original and haar-transformed images
-            base_transforms_list.append(ConcatenateChannelsd(keys=["image", "image_haar"], output_key="image"))
-            input_channels = 2 # Set input channels to 2 for the model
+
+
+   # If a transform was applied, add logic for multichannel or single channel output
+    if config.data.transform_name is not None:
+        if config.data.multichannel:
+            # Concatenate original and transformed images for a 2-channel input
+            base_transforms_list.append(
+                ConcatenateChannelsd(keys=["image", transform_output_key], output_key="image")
+            )
+            input_channels = 2
         else:
-            raise ValueError(f"Unknown transform name specified in config: '{config.data.transform_name}'")
+            # Overwrite the original image with the transformed one using CopyItemsd
+            base_transforms_list.append(
+                CopyItemsd(keys=[transform_output_key], names=["image"])
+            )
 
-    # --- Create final pipelines for training and validation ---
+        # Clean up the intermediate transformed image key using DeleteItemsd
+        base_transforms_list.append(
+            DeleteItemsd(keys=[transform_output_key])
+        )
+
+        # --- Create final pipelines for training and validation ---
     val_transforms = Compose(base_transforms_list)
     train_transforms_list = base_transforms_list + [
         RandFlipd(keys=["image"], prob=augs.rand_flip_prob, spatial_axis=0),

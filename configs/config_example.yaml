@@ -6,6 +6,7 @@ data:
   image_size: 256 # Used for resizing images
   transform_name: null # Can be 'ridgelet', 'haar_reconstructed', 'haar_multichannel', or null
   transform_threshold_ratio: 0.1 # Parameter for applicable transforms (e.g., RidgeletTransformd, HaarTransformd)
+  multichannel: false # If true, the model receives both original and transformed images as input
   augmentations:
     rand_flip_prob: 0.5
     rand_affine_prob: 0.5
