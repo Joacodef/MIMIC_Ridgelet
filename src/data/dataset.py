@@ -71,13 +71,6 @@ class CXRFractureDataset(Dataset):
             s_id_folder,
             f"{dicom_id}.jpg"
         )
-        
-        # Load the image using Pillow
-        try:
-            # Images are grayscale, so we load in 'L' mode
-            image = Image.open(image_path).convert("L")
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Image not found at path: {image_path}")
 
         image_path = os.path.join(
             self.image_root_dir, p_group, p_id_folder, s_id_folder, f"{dicom_id}.jpg"

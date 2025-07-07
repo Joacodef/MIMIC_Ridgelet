@@ -21,10 +21,10 @@ from monai.transforms import (
     LoadImaged,
     ScaleIntensityRanged,
     EnsureChannelFirstd,
-    CopyItemsd,     
-    DeleteItemsd, 
-    Resized, 
-    RandAffine
+    CopyItemsd,
+    DeleteItemsd,
+    Resized,
+    RandAffine,
 )
 
 # Add project root to path to allow absolute imports
@@ -138,7 +138,6 @@ def run_training(
 
     # --- 3. Data Preparation ---
     print("Setting up data pipelines with in-memory caching...")
-    augs = config.data.augmentations
 
     # Define transforms that are ALWAYS applied before caching (heavy, deterministic)
     pre_cache_transforms_list = [
