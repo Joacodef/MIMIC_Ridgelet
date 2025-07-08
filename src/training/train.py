@@ -32,7 +32,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from config.config import load_config, AppConfig
-from data.dataset import CXRFractureDataset
+from data.dataset import CXRClassificationDataset
 from models.model import FractureDetector
 from data.transforms import RidgeletTransformd, WaveletTransformd
 
@@ -122,7 +122,7 @@ def run_training(
     else:
         # Use run_name from config if provided, otherwise generate one
         run_name = getattr(config, 'run_name', None) or f"{config.model.base_model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        output_run_dir = os.path.join(PROJECT_OUTPUT_FOLDER_PATH, "models", config.data.split_folder_name, run_name)
+        output_run_dir = os.path.join(PROJECT_OUTPUT_FOLDER_PATH, "models", config.pathology, run_name)
 
     os.makedirs(output_run_dir, exist_ok=True)
 
@@ -186,13 +186,14 @@ def run_training(
 
     # --- Create Base Datasets ---
     # The base dataset is now responsible for loading and applying the heavy transforms once
-    split_dir = os.path.join(PROJECT_DATA_FOLDER_PATH, "splits", config.data.split_folder_name)
+    split_folder_name = f"split_{config.pathology}_{config.data.train_size}"
+    split_dir = os.path.join(PROJECT_DATA_FOLDER_PATH, "splits", split_folder_name)
     train_csv = train_csv_override if train_csv_override else os.path.join(split_dir, "train.csv")
     val_csv = os.path.join(split_dir, "validation.csv")
     print(f"Using training data from: {train_csv}")
 
-    base_train_dataset = CXRFractureDataset(csv_path=train_csv, image_root_dir=IMAGE_ROOT_DIR, transform=pre_cache_transforms)
-    base_val_dataset = CXRFractureDataset(csv_path=val_csv, image_root_dir=IMAGE_ROOT_DIR, transform=pre_cache_transforms)
+    base_train_dataset = CXRClassificationDataset(csv_path=train_csv, image_root_dir=IMAGE_ROOT_DIR, transform=pre_cache_transforms)
+    base_val_dataset = CXRClassificationDataset(csv_path=val_csv, image_root_dir=IMAGE_ROOT_DIR, transform=pre_cache_transforms)
 
     # --- Wrap with CacheDataset for In-Memory Caching ---
     # Start with a lower value like 0.25 and increase if you have enough memory.
@@ -267,8 +268,9 @@ def run_training(
     if config.wandb.enabled:
         # Use the final run name for W&B
         run_name = os.path.basename(output_run_dir)
-        wandb.init(project=config.wandb.project, entity=config.wandb.entity, name=run_name, config=asdict(config))
-        print("Weights & Biases logging enabled.")
+        project_name = f"{config.wandb.project}_{config.pathology}"
+        wandb.init(project=project_name, entity=config.wandb.entity, name=run_name, config=asdict(config))
+        print(f"Weights & Biases logging enabled for project: {project_name}")
 
     # --- 7. Training Loop ---
     best_model_path = ""

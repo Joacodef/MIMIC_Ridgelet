@@ -1,12 +1,11 @@
 import os
 import pandas as pd
 import torch
-from PIL import Image
 from torch.utils.data import Dataset
 
-class CXRFractureDataset(Dataset):
+class CXRClassificationDataset(Dataset):
     """
-    Custom PyTorch Dataset for loading MIMIC-CXR JPG files for fracture classification.
+    Custom PyTorch Dataset for loading MIMIC-CXR JPG files for classification.
 
     This class reads a CSV file containing image paths and labels, and provides
     a mechanism to load the corresponding images and apply transformations.
@@ -44,9 +43,7 @@ class CXRFractureDataset(Dataset):
             idx (int): The index of the item to retrieve.
 
         Returns:
-            A dictionary containing the transformed image and its label,
-            if dictionary-based transforms are used. Otherwise, a tuple
-            of (image, label).
+            A dictionary containing the transformed image and its label.
         """
         if torch.is_tensor(idx):
             idx = idx.tolist()
@@ -56,7 +53,10 @@ class CXRFractureDataset(Dataset):
         subject_id = str(row['subject_id'])
         study_id = str(row['study_id'])
         dicom_id = row['dicom_id']
-        label = torch.tensor(row['fracture'], dtype=torch.float32)
+        
+        # --- MODIFIED ---
+        # The label is now read from the generic 'label' column.
+        label = torch.tensor(row['label'], dtype=torch.float32)
 
         # Construct the image file path according to the MIMIC-CXR-JPG structure
         # e.g., .../files/p10/p10000032/s50414267/02aa804e-bde0afdd-112c0b34-7bc16630-4e384014.jpg
@@ -71,12 +71,8 @@ class CXRFractureDataset(Dataset):
             s_id_folder,
             f"{dicom_id}.jpg"
         )
-
-        image_path = os.path.join(
-            self.image_root_dir, p_group, p_id_folder, s_id_folder, f"{dicom_id}.jpg"
-        )
         
-        # Pass the path
+        # Pass the path and label to the transform pipeline
         sample = {"image": image_path, "label": label}
 
         if self.transform:

@@ -21,7 +21,7 @@ from monai.transforms import (
 )
 
 # Absolute imports from the 'src' directory
-from src.data.dataset import CXRFractureDataset
+from src.data.dataset import CXRClassificationDataset
 from src.models.model import FractureDetector
 
 def load_config(run_dir):
@@ -114,7 +114,7 @@ def evaluate(run_dir, data_split='test', checkpoint_name='best_model.pth'):
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"CSV file for data split '{data_split}' not found at {csv_path}")
 
-    dataset = CXRFractureDataset(
+    dataset = CXRClassificationDataset(
         csv_path=csv_path,
         image_root_dir=IMAGE_ROOT_DIR,
         transform=val_transforms

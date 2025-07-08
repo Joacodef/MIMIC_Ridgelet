@@ -26,7 +26,7 @@ class TransformParams:
 
 @dataclass
 class DataConfig:
-    split_folder_name: str
+    train_size: int
     image_size: int = 256
     augmentations: AugmentationConfig = field(default_factory=AugmentationConfig)
     transform_name: Optional[str] = None

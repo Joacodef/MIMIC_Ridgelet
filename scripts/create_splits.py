@@ -3,6 +3,14 @@ import os
 import pandas as pd
 from dotenv import load_dotenv
 
+# --- Custom Imports ---
+# Make sure the script can find the 'src' directory
+import sys
+# Add the project root to the Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.config.config import load_config, AppConfig
+
+
 # --- Configuration ---
 # Load environment variables from .env file
 load_dotenv()
@@ -17,11 +25,15 @@ CHEXPERT_FILE = "mimic-cxr-2.0.0-chexpert.csv.gz"
 SPLIT_FILE = "mimic-cxr-2.0.0-split.csv.gz"
 AVAILABLE_STUDIES_FILE = "raw/available_studies_complete.csv"
 
-def create_splits(train_size, val_size, test_size):
+
+def create_splits(config: AppConfig):
     """
-    Generates train, validation, and test splits for the MIMIC-CXR dataset.
+    Generates train, validation, and test splits for the MIMIC-CXR dataset
+    based on the provided configuration.
     """
     print("--- Starting Split Creation ---")
+    pathology = config.pathology
+    print(f"Target pathology: {pathology}")
 
     # --- 1. Load Data ---
     print("Loading data sources...")
@@ -38,14 +50,12 @@ def create_splits(train_size, val_size, test_size):
     # --- 2. Clean and Merge Data ---
     print("Cleaning and merging data...")
 
-    # *** FIX: Clean the ID columns from the custom CSV ***
-    # Remove leading 's' from study_id and 'p' from subject_id, then cast to integer
+    # Clean the ID columns from the custom CSV
     if 'study_id' in df_available.columns:
         df_available['study_id'] = df_available['study_id'].astype(str).str.lstrip('s').astype(int)
     if 'subject_id' in df_available.columns:
         df_available['subject_id'] = df_available['subject_id'].astype(str).str.lstrip('p').astype(int)
     
-    # Keep only the unique, cleaned study_ids to act as a filter
     available_study_ids = df_available['study_id'].unique()
 
     # Merge official MIMIC-CXR files
@@ -59,14 +69,18 @@ def create_splits(train_size, val_size, test_size):
     df_frontal = df_full[df_full['ViewPosition'].isin(['AP', 'PA'])].copy()
 
     if df_frontal.empty:
-        print("\nERROR: No frontal view images found in the filtered dataset. Please check the contents of your CSVs.")
+        print("\nERROR: No frontal view images found in the filtered dataset.")
         return
         
-    # Create binary fracture label
-    df_frontal['fracture'] = (df_frontal['Fracture'] == 1.0).astype(int)
+    # Create binary label based on the configured pathology
+    if pathology not in df_frontal.columns:
+        raise ValueError(f"The pathology '{pathology}' is not a valid column in the CheXpert labels file.")
+    
+    # Create a generic 'label' column. 1.0 indicates presence of the pathology.
+    df_frontal['label'] = (df_frontal[pathology] == 1.0).astype(int)
     
     print(f"Total available frontal images after filtering: {len(df_frontal)}")
-    print(f"Total fracture cases found: {df_frontal['fracture'].sum()}")
+    print(f"Total positive cases for '{pathology}': {df_frontal['label'].sum()}")
 
     # --- 3. Separate by Official Split ---
     df_train_full = df_frontal[df_frontal['split'] == 'train']
@@ -74,16 +88,18 @@ def create_splits(train_size, val_size, test_size):
     df_test_full = df_frontal[df_frontal['split'] == 'test']
 
     # --- 4. Build Balanced Training Set ---
+    train_size = config.data.train_size
     print(f"Building balanced training set of size {train_size}...")
+
     samples_per_class = train_size // 2
     
-    pos_cases = df_train_full[df_train_full['fracture'] == 1]
-    neg_cases = df_train_full[df_train_full['fracture'] == 0]
+    pos_cases = df_train_full[df_train_full['label'] == 1]
+    neg_cases = df_train_full[df_train_full['label'] == 0]
 
     if len(pos_cases) < samples_per_class:
-        raise ValueError(f"Not enough fracture cases for training. Requested {samples_per_class}, found {len(pos_cases)}.")
+        raise ValueError(f"Not enough positive cases for training. Requested {samples_per_class}, found {len(pos_cases)}.")
     if len(neg_cases) < samples_per_class:
-        raise ValueError(f"Not enough non-fracture cases for training. Requested {samples_per_class}, found {len(neg_cases)}.")
+        raise ValueError(f"Not enough negative cases for training. Requested {samples_per_class}, found {len(neg_cases)}.")
 
     train_pos = pos_cases.sample(n=samples_per_class, random_state=42)
     train_neg = neg_cases.sample(n=samples_per_class, random_state=42)
@@ -91,33 +107,40 @@ def create_splits(train_size, val_size, test_size):
 
     # --- 5. Build Validation and Test Sets ---
     print("Building validation and test sets...")
-    val_size_final = val_size if val_size is not None else len(df_val_full)
-    test_size_final = test_size if test_size is not None else len(df_test_full)
-
-    df_val = df_val_full.sample(n=min(val_size_final, len(df_val_full)), random_state=42)
-    df_test = df_test_full.sample(n=min(test_size_final, len(df_test_full)), random_state=42)
+    # These sets are not balanced and use all available data from their respective splits
+    df_val = df_val_full
+    df_test = df_test_full
 
     # --- 6. Save Outputs ---
-    output_dir = os.path.join(PROJECT_DATA_FOLDER_PATH, "splits", f"split_{train_size}")
+    # Output directory is now named using the pathology and split size
+    output_dir = os.path.join(PROJECT_DATA_FOLDER_PATH, "splits", f"split_{pathology}_{train_size}")
     os.makedirs(output_dir, exist_ok=True)
     print(f"\nSaving splits to: {output_dir}")
 
-    final_columns = ['dicom_id', 'study_id', 'subject_id', 'ViewPosition', 'split', 'fracture']
+    # Save 'label' column
+    final_columns = ['dicom_id', 'study_id', 'subject_id', 'ViewPosition', 'split', 'label']
     df_train[final_columns].to_csv(os.path.join(output_dir, "train.csv"), index=False)
     df_val[final_columns].to_csv(os.path.join(output_dir, "validation.csv"), index=False)
     df_test[final_columns].to_csv(os.path.join(output_dir, "test.csv"), index=False)
 
     print("--- Split Creation Complete ---")
-    print(f"Train set: {len(df_train)} images ({df_train['fracture'].sum()} fractures)")
-    print(f"Validation set: {len(df_val)} images ({df_val['fracture'].sum()} fractures)")
-    print(f"Test set: {len(df_test)} images ({df_test['fracture'].sum()} fractures)")
+    print(f"Train set: {len(df_train)} images ({df_train['label'].sum()} positive cases)")
+    print(f"Validation set: {len(df_val)} images ({df_val['label'].sum()} positive cases)")
+    print(f"Test set: {len(df_test)} images ({df_test['label'].sum()} positive cases)")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Create balanced train, validation, and test splits for MIMIC-CXR fracture detection.")
-    parser.add_argument("--train_size", type=int, required=True, help="The total size of the balanced training set.")
-    parser.add_argument("--val_size", type=int, default=None, help="The size of the validation set. Defaults to using all available validation images.")
-    parser.add_argument("--test_size", type=int, default=None, help="The size of the test set. Defaults to using all available test images.")
+    parser = argparse.ArgumentParser(description="Create train, validation, and test splits for MIMIC-CXR based on a config file.")
+    parser.add_argument(
+        "--config",
+        type=str,
+        required=True,
+        help="Path to the YAML configuration file."
+    )
     args = parser.parse_args()
     
-    create_splits(args.train_size, args.val_size, args.test_size)
+    # Load configuration from the specified file
+    app_config = load_config(args.config)
+    
+    # Run the split creation process
+    create_splits(app_config)

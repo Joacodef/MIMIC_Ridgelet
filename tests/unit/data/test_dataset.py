@@ -10,7 +10,7 @@ from monai.transforms import Compose, LoadImaged, EnsureChannelFirstd, Resized
 # Add the project's root directory to the Python path
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
-from src.data.dataset import CXRFractureDataset
+from src.data.dataset import CXRClassificationDataset
 
 @pytest.fixture(scope="module")
 def fake_data_environment():
@@ -43,7 +43,7 @@ def fake_data_environment():
 
 def test_initialization_and_len(fake_data_environment):
     """Test if the dataset initializes correctly and __len__ works."""
-    dataset = CXRFractureDataset(
+    dataset = CXRClassificationDataset(
         csv_path=fake_data_environment["csv_path"], 
         image_root_dir=fake_data_environment["image_root_dir"]
     )
@@ -51,7 +51,7 @@ def test_initialization_and_len(fake_data_environment):
 
 def test_getitem_content(fake_data_environment):
     """Test if __getitem__ returns a path string without transforms."""
-    dataset = CXRFractureDataset(
+    dataset = CXRClassificationDataset(
         csv_path=fake_data_environment["csv_path"], 
         image_root_dir=fake_data_environment["image_root_dir"]
     )
@@ -69,7 +69,7 @@ def test_getitem_with_transform(fake_data_environment):
         EnsureChannelFirstd(keys=["image"]),
         Resized(keys=["image"], spatial_size=(128, 128)),
     ])
-    dataset = CXRFractureDataset(
+    dataset = CXRClassificationDataset(
         csv_path=fake_data_environment["csv_path"], 
         image_root_dir=fake_data_environment["image_root_dir"],
         transform=transform
@@ -86,4 +86,4 @@ def test_getitem_with_transform(fake_data_environment):
 def test_file_not_found_error_csv(fake_data_environment):
     """Test if FileNotFoundError is raised for a missing CSV file."""
     with pytest.raises(FileNotFoundError):
-        CXRFractureDataset(csv_path="non_existent_file.csv", image_root_dir=fake_data_environment["image_root_dir"])
+        CXRClassificationDataset(csv_path="non_existent_file.csv", image_root_dir=fake_data_environment["image_root_dir"])
