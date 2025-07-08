@@ -1,13 +1,18 @@
 # configs/config.yaml
 
+# The main pathology to target for classification (e.g., "Cardiomegaly", "Fracture", "Edema")
+pathology: "Cardiomegaly"
+
 # Data configuration
 data:
   split_folder_name: "split_2000"
   image_size: 256 # Used for resizing images
-  transform_name: null # Can be 'haar', 'ridgelet', or null
-  transform_threshold_ratio: 0.1 # Parameter for applicable transforms (e.g., RidgeletTransformd, HaarTransformd)
+  transform_name: null # Can be 'wavelet', 'ridgelet', or null
+  transform_threshold_ratio: 0.1 # Parameter for applicable transforms
+  
   transform_params:
-    haar:
+    wavelet:
+      wavelet_name: "haar" # Name of the wavelet to use, e.g., 'haar', 'db1', etc.
       # Number of wavelet decomposition levels. Set to null or 0 for maximum.
       levels: 3 
       # If true, concatenates the original image with the wavelet channels

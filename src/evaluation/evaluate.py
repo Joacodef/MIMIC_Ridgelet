@@ -6,7 +6,7 @@ import numpy as np
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 from tqdm import tqdm
 
-from src.data.transforms import HaarTransformd, RidgeletTransformd
+from src.data.transforms import WaveletTransformd, RidgeletTransformd
 
 # MONAI imports to match the training script
 from monai.data import DataLoader
@@ -75,14 +75,14 @@ def evaluate(run_dir, data_split='test', checkpoint_name='best_model.pth'):
     transform_name = config['data'].get('transform_name') # Use .get for safety
 
     # Check if a special transform was used during training and add it to the pipeline
-    if transform_name == 'haar':
+    if transform_name == 'wavelet':
         # Add Ridgelet logic here in the future if needed
-        haar_params = config['data']['transform_params']['haar']
-        transform_instance = HaarTransformd(
+        wavelet_params = config['data']['transform_params']['wavelet']
+        transform_instance = WaveletTransformd(
             keys=["image"],
             output_key=transform_output_key,
             threshold_ratio=config['data']['transform_threshold_ratio'],
-            **haar_params
+            **wavelet_params
         )
         transforms_list.append(transform_instance)
 

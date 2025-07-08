@@ -34,7 +34,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config.config import load_config, AppConfig
 from data.dataset import CXRFractureDataset
 from models.model import FractureDetector
-from data.transforms import RidgeletTransformd, HaarTransformd
+from data.transforms import RidgeletTransformd, WaveletTransformd
 
 
 def train_one_epoch(model, train_loader, optimizer, criterion, device, augment_fn=None):
@@ -150,16 +150,16 @@ def run_training(
     # Define the key for the transformed image output
     transform_output_key = "image_transformed"
 
-    # Add the special transform (Haar/Ridgelet) to the pre-cache list
+    # Add the special transform (Wavelet/Ridgelet) to the pre-cache list
     if config.data.transform_name == 'ridgelet':
         ridgelet_params = asdict(config.data.transform_params.ridgelet)
         pre_cache_transforms_list.append(RidgeletTransformd(keys=["image"], output_key=transform_output_key, threshold_ratio=config.data.transform_threshold_ratio, **ridgelet_params))
-    elif config.data.transform_name == 'haar':
-        haar_params = asdict(config.data.transform_params.haar)
-        pre_cache_transforms_list.append(HaarTransformd(keys=["image"], output_key=transform_output_key, threshold_ratio=config.data.transform_threshold_ratio, **haar_params))
+    elif config.data.transform_name == 'wavelet':
+        wavelet_params = asdict(config.data.transform_params.wavelet)
+        pre_cache_transforms_list.append(WaveletTransformd(keys=["image"], output_key=transform_output_key, threshold_ratio=config.data.transform_threshold_ratio, **wavelet_params))
 
     # If a special transform was applied, dynamically determine the number of output channels
-    transform_instance = next((t for t in pre_cache_transforms_list if isinstance(t, (HaarTransformd, RidgeletTransformd))), None)
+    transform_instance = next((t for t in pre_cache_transforms_list if isinstance(t, (WaveletTransformd, RidgeletTransformd))), None)
 
     if transform_instance is not None:
         # Create a dummy dictionary that mimics the data state at this point in the pipeline

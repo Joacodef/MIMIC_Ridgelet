@@ -13,15 +13,16 @@ class AugmentationConfig:
     scale_range: float = 0.1
 
 @dataclass
-class HaarTransformConfig:
-    """Configuration specific to the Haar Transform."""
+class WaveletTransformConfig:
+    """Configuration specific to the Wavelet Transform."""
     levels: int = 2
     input_original_image: bool = False
+    wavelet_name: str = "haar"
 
 @dataclass
 class TransformParams:
     """Container for specific transform parameters."""
-    haar: HaarTransformConfig = field(default_factory=HaarTransformConfig)
+    wavelet: WaveletTransformConfig = field(default_factory=WaveletTransformConfig)
 
 @dataclass
 class DataConfig:
@@ -79,6 +80,7 @@ class WandbConfig:
 
 @dataclass
 class AppConfig:
+    pathology: str
     data: DataConfig
     dataloader: DataLoaderConfig
     model: ModelConfig

@@ -15,6 +15,103 @@ from typing import Dict, Any, Hashable, Mapping, List, Optional
 from scipy.ndimage import gaussian_filter
 
 
+# Helper function for normalization
+def _normalize_channel(channel: np.ndarray) -> np.ndarray:
+    """Normalizes a single channel to the [0, 1] range."""
+    min_val, max_val = np.min(channel), np.max(channel)
+    if max_val > min_val:
+        return (channel - min_val) / (max_val - min_val)
+    return np.zeros_like(channel)
+
+class WaveletTransformd(MapTransform):
+    """
+    Applies a multi-level Haar wavelet decomposition and stacks the coefficient
+    maps into separate channels for model input.
+    """
+    def __init__(
+        self,
+        keys: List[str],
+        output_key: str,
+        wavelet_name: str = 'haar',
+        levels: Optional[int] = None,
+        threshold_ratio: float = 0.0,
+        input_original_image: bool = False,
+        allow_missing_keys: bool = False,
+    ):
+        """
+        Args:
+            keys (List[str]): Keys of the data dictionary to apply the transform to.
+            output_key (str): Key for the output in the data dictionary.
+            threshold_ratio (float): Ratio for soft thresholding detail coefficients. If 0, no thresholding is applied.
+            input_original_image (bool): If True, concatenates the original image as the first channel.
+            allow_missing_keys (bool): If True, does not raise an exception if a key is missing.
+        """
+        super().__init__(keys, allow_missing_keys)
+        self.output_key = output_key
+        self.wavelet_name = wavelet_name
+        self.levels = levels
+        self.threshold_ratio = threshold_ratio        
+        self.input_original_image = input_original_image
+
+    def __call__(self, data: Mapping[Hashable, Any]) -> Dict[Hashable, Any]:
+        d = dict(data)
+        for key in self.keys:
+            if key not in d:
+                continue
+
+            image_tensor = d[key]
+            image_np = image_tensor.cpu().numpy().squeeze()
+            original_shape = image_np.shape
+            max_possible_levels = pywt.dwt_max_level(min(original_shape), self.wavelet_name)
+
+            # 1. Determine the number of decomposition levels
+            if self.levels is None or self.levels <= 0:
+                num_levels = max_possible_levels
+            else:
+                # Use specified level, but cap it at the maximum possible
+                num_levels = min(self.levels, max_possible_levels)
+
+            if num_levels == 0:
+                d[self.output_key] = image_tensor
+                continue
+                
+            # 2. Decompose the image
+            coeffs = pywt.wavedec2(image_np, self.wavelet_name, level=num_levels)
+            # 3. Optional Thresholding
+            if self.threshold_ratio > 0.0:
+                detail_coeffs_flat = np.concatenate([np.ravel(detail) for level in coeffs[1:] for detail in level])
+                if detail_coeffs_flat.size > 0:
+                    threshold_value = np.percentile(np.abs(detail_coeffs_flat), self.threshold_ratio * 100)
+                    thresholded_coeffs = [coeffs[0]]
+                    for level_details in coeffs[1:]:
+                        thresholded_coeffs.append(tuple(pywt.threshold(detail, threshold_value, mode='soft') for detail in level_details))
+                    coeffs = thresholded_coeffs
+
+            # 4. Resize all coefficient maps and collect them
+            output_channels = []
+            
+            approx_resized = resize(coeffs[0], original_shape, anti_aliasing=True)
+            output_channels.append(_normalize_channel(approx_resized))
+
+            for level_details in coeffs[1:]:
+                for detail_coeff in level_details:
+                    detail_resized = resize(detail_coeff, original_shape, anti_aliasing=True)
+                    output_channels.append(_normalize_channel(detail_resized))
+            
+            # 5. Stack channels into a single tensor
+            wavelet_tensor = torch.from_numpy(np.stack(output_channels, axis=0)).float()
+
+            # 6. Optionally concatenate the original image
+            if self.input_original_image:
+                final_tensor = torch.cat([image_tensor, wavelet_tensor], dim=0)
+            else:
+                final_tensor = wavelet_tensor
+            
+            d[self.output_key] = final_tensor
+
+        return d
+    
+
 class RidgeletTransformd(MapTransform):
     """
     A MONAI-compatible dictionary-based transform to apply the Finite Ridgelet Transform (FRT).
@@ -77,99 +174,7 @@ class RidgeletTransformd(MapTransform):
     
 
 
-# Helper function for normalization
-def _normalize_channel(channel: np.ndarray) -> np.ndarray:
-    """Normalizes a single channel to the [0, 1] range."""
-    min_val, max_val = np.min(channel), np.max(channel)
-    if max_val > min_val:
-        return (channel - min_val) / (max_val - min_val)
-    return np.zeros_like(channel)
 
-class HaarTransformd(MapTransform):
-    """
-    Applies a multi-level Haar wavelet decomposition and stacks the coefficient
-    maps into separate channels for model input.
-    """
-    def __init__(
-        self,
-        keys: List[str],
-        output_key: str,
-        levels: Optional[int] = None,
-        threshold_ratio: float = 0.0,
-        input_original_image: bool = False,
-        allow_missing_keys: bool = False,
-    ):
-        """
-        Args:
-            keys (List[str]): Keys of the data dictionary to apply the transform to.
-            output_key (str): Key for the output in the data dictionary.
-            threshold_ratio (float): Ratio for soft thresholding detail coefficients. If 0, no thresholding is applied.
-            input_original_image (bool): If True, concatenates the original image as the first channel.
-            allow_missing_keys (bool): If True, does not raise an exception if a key is missing.
-        """
-        super().__init__(keys, allow_missing_keys)
-        self.output_key = output_key
-        self.levels = levels
-        self.threshold_ratio = threshold_ratio        
-        self.input_original_image = input_original_image
-
-    def __call__(self, data: Mapping[Hashable, Any]) -> Dict[Hashable, Any]:
-        d = dict(data)
-        for key in self.keys:
-            if key not in d:
-                continue
-
-            image_tensor = d[key]
-            image_np = image_tensor.cpu().numpy().squeeze()
-            original_shape = image_np.shape
-            max_possible_levels = pywt.dwt_max_level(min(original_shape), 'haar')
-
-            # 1. Determine the number of decomposition levels
-            if self.levels is None or self.levels <= 0:
-                num_levels = max_possible_levels
-            else:
-                # Use specified level, but cap it at the maximum possible
-                num_levels = min(self.levels, max_possible_levels)
-
-            if num_levels == 0:
-                d[self.output_key] = image_tensor
-                continue
-                
-            # 2. Decompose the image
-            coeffs = pywt.wavedec2(image_np, 'haar', level=num_levels)
-            # 3. Optional Thresholding
-            if self.threshold_ratio > 0.0:
-                detail_coeffs_flat = np.concatenate([np.ravel(detail) for level in coeffs[1:] for detail in level])
-                if detail_coeffs_flat.size > 0:
-                    threshold_value = np.percentile(np.abs(detail_coeffs_flat), self.threshold_ratio * 100)
-                    thresholded_coeffs = [coeffs[0]]
-                    for level_details in coeffs[1:]:
-                        thresholded_coeffs.append(tuple(pywt.threshold(detail, threshold_value, mode='soft') for detail in level_details))
-                    coeffs = thresholded_coeffs
-
-            # 4. Resize all coefficient maps and collect them
-            output_channels = []
-            
-            approx_resized = resize(coeffs[0], original_shape, anti_aliasing=True)
-            output_channels.append(_normalize_channel(approx_resized))
-
-            for level_details in coeffs[1:]:
-                for detail_coeff in level_details:
-                    detail_resized = resize(detail_coeff, original_shape, anti_aliasing=True)
-                    output_channels.append(_normalize_channel(detail_resized))
-            
-            # 5. Stack channels into a single tensor
-            wavelet_tensor = torch.from_numpy(np.stack(output_channels, axis=0)).float()
-
-            # 6. Optionally concatenate the original image
-            if self.input_original_image:
-                final_tensor = torch.cat([image_tensor, wavelet_tensor], dim=0)
-            else:
-                final_tensor = wavelet_tensor
-            
-            d[self.output_key] = final_tensor
-
-        return d
     
 
 # B3 spline kernel for the À Trous algorithm, as defined in the reference paper.
