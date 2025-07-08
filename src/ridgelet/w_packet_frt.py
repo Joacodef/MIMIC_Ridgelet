@@ -39,6 +39,7 @@ class WPacketFRT:
         self.wavelet = wavelet
         self.a_trous_scales = a_trous_scales
         self.wpt_level = wpt_level
+        self.theta = None
 
     def forward(self, img: np.ndarray) -> Tuple[List[list], np.ndarray]:
         """
@@ -96,20 +97,73 @@ class WPacketFRT:
 
         Steps:
         1. For each processed detail layer's coefficients:
-           a. Apply the inverse Wavelet Packet Transform.
-           b. Apply the inverse Radon Transform.
+           a. Apply the inverse Wavelet Packet Transform to reconstruct projections.
+           b. Apply the inverse Radon Transform to the reconstructed sinogram.
         2. Sum the reconstructed detail layers.
         3. Add the residual layer back to the sum.
         """
-        
-        # TODO: Implement the reconstruction logic
-        # - Loop through processed_coeffs
-        # - Apply inverse WPT
-        # - Apply inverse Radon
-        # - Sum the resulting layers
-        # - Add the residual
-        
-        print("Reconstruction placeholder: Logic needs to be implemented.")
-        
-        # For now, return the residual as a placeholder
-        return residual
+        reconstructed_details = []
+
+        # Ensure theta is available, which should be set during the forward pass.
+        # If not, recalculate it based on the original image shape.
+        if not hasattr(self, 'theta') or self.theta is None:
+            self.theta = np.linspace(0., 180., max(original_shape), endpoint=False)
+
+        # 1. Loop through each processed detail layer's coefficients
+        for layer_coeffs in processed_coeffs:
+            reconstructed_projections = []
+            
+            # Reconstruct each projection from its WPT coefficients
+            for proj_coeffs in layer_coeffs:
+                # Create a new WaveletPacket object to hold the coefficients
+                wp_recon = pywt.WaveletPacket(data=None, wavelet=self.wavelet, mode='symmetric', maxlevel=self.wpt_level)
+                
+                for node_path, thr_coeffs in proj_coeffs:
+                    try:
+                        wp_recon[node_path] = thr_coeffs
+                    except ValueError:
+                        # This can happen if the coefficient length is inconsistent.
+                        # For robustness, we can skip problematic nodes.
+                        print(f"Warning: Skipping node {node_path} due to size mismatch.")
+                        continue
+
+                # Reconstruct the projection from the coefficients
+                reconstructed_proj = wp_recon.reconstruct(update=False)
+                reconstructed_projections.append(reconstructed_proj)
+
+            # Form the sinogram from the list of reconstructed projections
+            # The .T operation is reversed from the forward pass
+            reconstructed_sinogram = np.array(reconstructed_projections).T
+            
+            # 1b. Apply the inverse Radon Transform
+            # The filter is disabled as filtering is handled by the wavelet thresholding
+            reconstructed_layer = iradon(
+                reconstructed_sinogram,
+                theta=self.theta,
+                output_size=max(original_shape), # Assumes square output, common for medical imaging
+                circle=True,
+                filter_name=None
+            )
+            reconstructed_details.append(reconstructed_layer)
+
+        # 2. Sum the reconstructed detail layers
+        # Ensure all layers have the same shape before summing
+        min_size = min(layer.shape[0] for layer in reconstructed_details)
+        reconstructed_details_resized = [layer[:min_size, :min_size] for layer in reconstructed_details]
+        reconstructed_sum = np.sum(reconstructed_details_resized, axis=0)
+
+        # 3. Add the residual layer back
+        # Ensure residual has the same shape as the sum of details
+        if reconstructed_sum.shape != residual.shape:
+             from skimage.transform import resize
+             residual_resized = resize(residual, reconstructed_sum.shape, mode='reflect', anti_aliasing=True)
+             final_image = reconstructed_sum + residual_resized
+        else:
+             final_image = reconstructed_sum + residual
+
+        # Ensure the final output matches the original image shape
+        if final_image.shape != original_shape:
+            from skimage.transform import resize
+            final_image = resize(final_image, original_shape, mode='reflect', anti_aliasing=True)
+            
+        return final_image
