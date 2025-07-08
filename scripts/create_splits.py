@@ -3,8 +3,6 @@ import os
 import pandas as pd
 from dotenv import load_dotenv
 
-# --- Custom Imports ---
-# Make sure the script can find the 'src' directory
 import sys
 # Add the project root to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
