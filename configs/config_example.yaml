@@ -8,10 +8,10 @@ data:
   transform_threshold_ratio: 0.1 # Parameter for applicable transforms (e.g., RidgeletTransformd, HaarTransformd)
   transform_params:
     haar:
-      # Number of decomposition levels
-      levels: 1
-      # Details to keep. Options: "HL", "VL", "DL"
-      details_to_keep: ["HL", "VL", "DL"]
+      # Number of wavelet decomposition levels. Set to null or 0 for maximum.
+      levels: 3 
+      # If true, concatenates the original image with the wavelet channels
+      input_original_image: false 
   multichannel: false # If true, the model receives both original and transformed images as input
   augmentations:
     rand_flip_prob: 0.5
@@ -26,12 +26,13 @@ dataloader:
 
 # Model configuration
 model:
-  base_model: "resnet18" # Or another model name your FractureDetector supports
+  base_model: "resnet18" # Or another model name FractureDetector supports
 
 # Training configuration
 training:
   optimizer: "Adam" # Can be "Adam" or "SGD", for example
   epochs: 50
+  ram_cache_rate: 1
   learning_rate: 0.001
   weight_decay: 1e-5
   early_stopping_patience: 10 # Number of epochs to wait for improvement before stopping

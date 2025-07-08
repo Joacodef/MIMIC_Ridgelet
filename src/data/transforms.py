@@ -77,47 +77,41 @@ class RidgeletTransformd(MapTransform):
     
 
 
+# Helper function for normalization
+def _normalize_channel(channel: np.ndarray) -> np.ndarray:
+    """Normalizes a single channel to the [0, 1] range."""
+    min_val, max_val = np.min(channel), np.max(channel)
+    if max_val > min_val:
+        return (channel - min_val) / (max_val - min_val)
+    return np.zeros_like(channel)
+
 class HaarTransformd(MapTransform):
     """
-    Applies a multi-level Haar wavelet transform. It reconstructs the image
-    from selected sub-bands and can optionally apply an Unsharp Mask filter to
-    the final reconstructed image for robust sharpening.
+    Applies a multi-level Haar wavelet decomposition and stacks the coefficient
+    maps into separate channels for model input.
     """
     def __init__(
         self,
         keys: List[str],
         output_key: str,
+        levels: Optional[int] = None,
         threshold_ratio: float = 0.0,
-        levels: int = 1,
-        details_to_keep: Optional[List[str]] = None,
-        unsharp_amount: Optional[float] = None,
-        unsharp_sigma: float = 1.0,
+        input_original_image: bool = False,
         allow_missing_keys: bool = False,
     ):
         """
         Args:
-            keys: Keys of the data dictionary to apply the transform to.
-            output_key: Key for the output in the data dictionary.
-            threshold_ratio: Ratio for soft thresholding detail coefficients.
-            levels: Number of wavelet decomposition levels.
-            details_to_keep: List of sub-bands to keep for reconstruction.
-                Options: "LL", "HL", "LH", "HH". Defaults to all.
-            unsharp_amount: Scaling factor for the unsharp mask. If None or 0,
-                no sharpening is applied. Typical values are between 0.5 and 1.5.
-            unsharp_sigma: Standard deviation for the Gaussian blur used in
-                the unsharp mask. Controls the radius of the blurring effect.
-            allow_missing_keys: Don't raise exception if key is missing.
+            keys (List[str]): Keys of the data dictionary to apply the transform to.
+            output_key (str): Key for the output in the data dictionary.
+            threshold_ratio (float): Ratio for soft thresholding detail coefficients. If 0, no thresholding is applied.
+            input_original_image (bool): If True, concatenates the original image as the first channel.
+            allow_missing_keys (bool): If True, does not raise an exception if a key is missing.
         """
         super().__init__(keys, allow_missing_keys)
         self.output_key = output_key
-        self.threshold_ratio = threshold_ratio
         self.levels = levels
-        self.unsharp_amount = unsharp_amount
-        self.unsharp_sigma = unsharp_sigma
-        # Default to keeping ALL bands if none are specified
-        self.details_to_keep = details_to_keep if details_to_keep is not None else ["LL", "HL", "LH", "HH"]
-        # Detail map now includes the approximation band "LL"
-        self.detail_map = {"HL": 0, "LH": 1, "HH": 2}
+        self.threshold_ratio = threshold_ratio        
+        self.input_original_image = input_original_image
 
     def __call__(self, data: Mapping[Hashable, Any]) -> Dict[Hashable, Any]:
         d = dict(data)
@@ -128,95 +122,53 @@ class HaarTransformd(MapTransform):
             image_tensor = d[key]
             image_np = image_tensor.cpu().numpy().squeeze()
             original_shape = image_np.shape
+            max_possible_levels = pywt.dwt_max_level(min(original_shape), 'haar')
 
-            # 1. Decompose the original image
-            coeffs = pywt.wavedec2(image_np, 'haar', level=self.levels)
+            # 1. Determine the number of decomposition levels
+            if self.levels is None or self.levels <= 0:
+                num_levels = max_possible_levels
+            else:
+                # Use specified level, but cap it at the maximum possible
+                num_levels = min(self.levels, max_possible_levels)
 
-            # 2. Thresholding
+            if num_levels == 0:
+                d[self.output_key] = image_tensor
+                continue
+                
+            # 2. Decompose the image
+            coeffs = pywt.wavedec2(image_np, 'haar', level=num_levels)
+            # 3. Optional Thresholding
             if self.threshold_ratio > 0.0:
                 detail_coeffs_flat = np.concatenate([np.ravel(detail) for level in coeffs[1:] for detail in level])
                 if detail_coeffs_flat.size > 0:
                     threshold_value = np.percentile(np.abs(detail_coeffs_flat), self.threshold_ratio * 100)
-                else:
-                    threshold_value = 0
-                
-                thresholded_coeffs = [coeffs[0]]
-                for level_details in coeffs[1:]:
-                    thresholded_coeffs.append(tuple(pywt.threshold(detail, threshold_value, mode='soft') for detail in level_details))
-                coeffs = thresholded_coeffs
+                    thresholded_coeffs = [coeffs[0]]
+                    for level_details in coeffs[1:]:
+                        thresholded_coeffs.append(tuple(pywt.threshold(detail, threshold_value, mode='soft') for detail in level_details))
+                    coeffs = thresholded_coeffs
 
-            # 3. Create a template for reconstruction
-            recon_coeffs = [np.zeros_like(coeffs[0])] + [
-                tuple(np.zeros_like(detail) for detail in level_details)
-                for level_details in coeffs[1:]
-            ]
-
-            # 4. Selectively copy desired coefficients
-            if "LL" in self.details_to_keep:
-                recon_coeffs[0][:] = coeffs[0]
-
-            for level_idx, level_details in enumerate(coeffs[1:]):
-                for detail_name, detail_coeff_idx in self.detail_map.items():
-                    if detail_name in self.details_to_keep:
-                        recon_coeffs[level_idx + 1][detail_coeff_idx][:] = level_details[detail_coeff_idx]
+            # 4. Resize all coefficient maps and collect them
+            output_channels = []
             
-            # 5. Reconstruct and resize
-            reconstructed_img = pywt.waverec2(recon_coeffs, 'haar')
-            reconstructed_img = resize(reconstructed_img, original_shape, anti_aliasing=True)
+            approx_resized = resize(coeffs[0], original_shape, anti_aliasing=True)
+            output_channels.append(_normalize_channel(approx_resized))
 
-            # 6. Normalize the reconstructed image to [0, 1]
-            min_val, max_val = np.min(reconstructed_img), np.max(reconstructed_img)
-            if max_val > min_val:
-                processed_img = (reconstructed_img - min_val) / (max_val - min_val)
+            for level_details in coeffs[1:]:
+                for detail_coeff in level_details:
+                    detail_resized = resize(detail_coeff, original_shape, anti_aliasing=True)
+                    output_channels.append(_normalize_channel(detail_resized))
+            
+            # 5. Stack channels into a single tensor
+            wavelet_tensor = torch.from_numpy(np.stack(output_channels, axis=0)).float()
+
+            # 6. Optionally concatenate the original image
+            if self.input_original_image:
+                final_tensor = torch.cat([image_tensor, wavelet_tensor], dim=0)
             else:
-                processed_img = np.zeros_like(reconstructed_img)
-
-            # 7. Optional Unsharp Masking (applied AFTER normalization)
-            if self.unsharp_amount is not None and self.unsharp_amount > 0:
-                # Create a blurred version of the image
-                blurred_img = gaussian_filter(processed_img, sigma=self.unsharp_sigma)
-                # Create the mask by subtracting the blurred version from the original
-                mask = processed_img - blurred_img
-                # Add the scaled mask back to the original image
-                sharpened_image = processed_img + self.unsharp_amount * mask
-                # Clip the result to the valid [0, 1] range
-                processed_img = np.clip(sharpened_image, 0, 1)
-
-            d[self.output_key] = torch.from_numpy(processed_img).float().unsqueeze(0)
-
-        return d
-
-class ConcatenateChannelsd(MapTransform):
-    """
-    Concatenates multiple image tensors along the channel dimension.
-    Assumes all input images have a channel dimension (C, H, W).
-    """
-    def __init__(self, keys: List[Hashable], output_key: Hashable, allow_missing_keys: bool = False):
-        super().__init__(keys, allow_missing_keys)
-        if len(keys) < 2:
-            raise ValueError("ConcatenateChannelsd requires at least two keys to concatenate.")
-        self.output_key = output_key
-
-    def __call__(self, data: Mapping[Hashable, Any]) -> Dict[Hashable, Any]:
-        d = dict(data)
-        tensors_to_concat = []
-        for key in self.keys:
-            if key not in d and not self.allow_missing_keys:
-                raise KeyError(f"Missing key '{key}' in data, and allow_missing_keys is False.")
-            if key in d:
-                tensors_to_concat.append(d[key])
+                final_tensor = wavelet_tensor
             
-        if not tensors_to_concat:
-            return d # No tensors to concatenate, return original data
+            d[self.output_key] = final_tensor
 
-        # Concatenate along the channel dimension (dim=0 assuming C, H, W)
-        d[self.output_key] = torch.cat(tensors_to_concat, dim=0)
-        
-        # Optionally remove individual keys if they are no longer needed
-        for key in self.keys:
-            if key != self.output_key: # Don't delete the new key if it's one of the original keys
-                d.pop(key, None)
-        
         return d
     
 

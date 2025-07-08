@@ -34,7 +34,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config.config import load_config, AppConfig
 from data.dataset import CXRFractureDataset
 from models.model import FractureDetector
-from data.transforms import RidgeletTransformd, HaarTransformd, ConcatenateChannelsd
+from data.transforms import RidgeletTransformd, HaarTransformd
 
 
 def train_one_epoch(model, train_loader, optimizer, criterion, device, augment_fn=None):
@@ -158,19 +158,28 @@ def run_training(
         haar_params = asdict(config.data.transform_params.haar)
         pre_cache_transforms_list.append(HaarTransformd(keys=["image"], output_key=transform_output_key, threshold_ratio=config.data.transform_threshold_ratio, **haar_params))
 
-    # Add multichannel logic to the pre-cache list and determine input channels
-    if config.data.transform_name is not None:
-        if config.data.multichannel:
-            pre_cache_transforms_list.append(ConcatenateChannelsd(keys=["image", transform_output_key], output_key="image"))
-            input_channels = 2
-        else:
-            pre_cache_transforms_list.extend([
-                DeleteItemsd(keys=["image"]),
-                CopyItemsd(keys=[transform_output_key], names=["image"]),
-            ])
-            input_channels = 1
-        pre_cache_transforms_list.append(DeleteItemsd(keys=[transform_output_key]))
+    # If a special transform was applied, dynamically determine the number of output channels
+    transform_instance = next((t for t in pre_cache_transforms_list if isinstance(t, (HaarTransformd, RidgeletTransformd))), None)
+
+    if transform_instance is not None:
+        # Create a dummy dictionary that mimics the data state at this point in the pipeline
+        dummy_data = {
+            "image": torch.randn(1, config.data.image_size, config.data.image_size)
+        }
+        # Apply the transform to the dummy data to inspect the output
+        transformed_dummy = transform_instance(dummy_data)
+        # Get the number of channels from the shape of the output tensor
+        input_channels = transformed_dummy[transform_output_key].shape[0]
+        print(f"'{config.data.transform_name}' transform will be used. Model input channels dynamically set to: {input_channels}")
+
+        # The final tensor is in 'transform_output_key'. We need to make it the 'image' key.
+        pre_cache_transforms_list.extend([
+            DeleteItemsd(keys=["image"]),
+            CopyItemsd(keys=[transform_output_key], names=["image"]),
+            DeleteItemsd(keys=[transform_output_key]),
+        ])
     else:
+        # Default input channels is 1 (standard grayscale)
         input_channels = 1
 
     pre_cache_transforms = Compose(pre_cache_transforms_list)
@@ -186,9 +195,8 @@ def run_training(
     base_val_dataset = CXRFractureDataset(csv_path=val_csv, image_root_dir=IMAGE_ROOT_DIR, transform=pre_cache_transforms)
 
     # --- Wrap with CacheDataset for In-Memory Caching ---
-    # TUNE THIS VALUE based on your available system RAM.
     # Start with a lower value like 0.25 and increase if you have enough memory.
-    RAM_CACHE_RATE = 1.0
+    RAM_CACHE_RATE = config.training.ram_cache_rate
     print(f"Initializing in-memory CacheDataset with cache_rate={RAM_CACHE_RATE}. This may take a while on the first run...")
 
     train_dataset = CacheDataset(

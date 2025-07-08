@@ -15,10 +15,8 @@ class AugmentationConfig:
 @dataclass
 class HaarTransformConfig:
     """Configuration specific to the Haar Transform."""
-    levels: int = 1
-    details_to_keep: List[str] = field(default_factory=lambda: ["HL", "VL", "DL"])
-    unsharp_amount: Optional[float] = None
-    unsharp_sigma: float = 1.0
+    levels: int = 2
+    input_original_image: bool = False
 
 @dataclass
 class TransformParams:
@@ -64,6 +62,7 @@ class SchedulerConfig:
 class TrainingConfig:
     optimizer: str = "Adam"
     epochs: int = 50
+    ram_cache_rate: float = 0.0  
     learning_rate: float = 0.001
     weight_decay: float = 1e-5
     early_stopping_patience: int = 10

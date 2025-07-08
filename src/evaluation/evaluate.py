@@ -6,9 +6,19 @@ import numpy as np
 from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 from tqdm import tqdm
 
+from src.data.transforms import HaarTransformd, RidgeletTransformd
+
 # MONAI imports to match the training script
 from monai.data import DataLoader
-from monai.transforms import Compose, LoadImaged, EnsureChannelFirstd, ScaleIntensityRanged, Resized
+from monai.transforms import (
+    Compose,
+    LoadImaged,
+    ScaleIntensityRanged,
+    EnsureChannelFirstd,
+    Resized,
+    CopyItemsd,
+    DeleteItemsd,
+)
 
 # Absolute imports from the 'src' directory
 from src.data.dataset import CXRFractureDataset
@@ -50,15 +60,53 @@ def evaluate(run_dir, data_split='test', checkpoint_name='best_model.pth'):
     IMAGE_ROOT_DIR = os.getenv("MIMIC_CXR_P_FOLDERS_PATH")
     PROJECT_DATA_FOLDER_PATH = os.getenv("PROJECT_DATA_FOLDER_PATH")
 
-    # 2. Recreate the Validation Transforms from the training script
-    val_transforms = Compose([
+    # 2. Recreate the exact transform pipeline and model from the training configuration
+    
+    # Base transforms applied to all images
+    transforms_list = [
         LoadImaged(keys=["image"]),
         EnsureChannelFirstd(keys=["image"]),
         ScaleIntensityRanged(keys=["image"], a_min=0.0, a_max=255.0, b_min=0.0, b_max=1.0, clip=True),
-        Resized(keys=["image"], spatial_size=(config['data']['image_size'], config['data']['image_size']))
-    ])
-    
-    # 3. Load Data
+        Resized(keys=["image"], spatial_size=(config['data']['image_size'], config['data']['image_size'])),
+    ]
+
+    transform_instance = None
+    transform_output_key = "image_transformed"
+    transform_name = config['data'].get('transform_name') # Use .get for safety
+
+    # Check if a special transform was used during training and add it to the pipeline
+    if transform_name == 'haar':
+        # Add Ridgelet logic here in the future if needed
+        haar_params = config['data']['transform_params']['haar']
+        transform_instance = HaarTransformd(
+            keys=["image"],
+            output_key=transform_output_key,
+            threshold_ratio=config['data']['transform_threshold_ratio'],
+            **haar_params
+        )
+        transforms_list.append(transform_instance)
+
+    # Dynamically determine the number of input channels for the model
+    if transform_instance:
+        dummy_data = {"image": torch.randn(1, config['data']['image_size'], config['data']['image_size'])}
+        transformed_dummy = transform_instance(dummy_data)
+        input_channels = transformed_dummy[transform_output_key].shape[0]
+        
+        print(f"Applying '{transform_name}' transform. Model input channels: {input_channels}")
+
+        # Add steps to replace the original image with the transformed multi-channel tensor
+        transforms_list.extend([
+            DeleteItemsd(keys=["image"]),
+            CopyItemsd(keys=[transform_output_key], names=["image"]),
+            DeleteItemsd(keys=[transform_output_key]),
+        ])
+    else:
+        input_channels = 1 # Default for a standard grayscale image
+        print(f"No special transform applied. Model input channels: {input_channels}")
+
+    val_transforms = Compose(transforms_list)
+
+    # 3. Load Data with the correct transforms
     split_dir = os.path.join(PROJECT_DATA_FOLDER_PATH, "splits", config['data']['split_folder_name'])
     csv_file_name = "test.csv" if data_split == 'test' else 'validation.csv'
     csv_path = os.path.join(split_dir, csv_file_name)
@@ -72,25 +120,24 @@ def evaluate(run_dir, data_split='test', checkpoint_name='best_model.pth'):
         transform=val_transforms
     )
     
-    # Use MONAI's DataLoader
     loader = DataLoader(
         dataset,
-        batch_size=config['dataloader']['batch_size'],
+        batch_size=config['train']['batch_size'],
         shuffle=False,
-        num_workers=config['dataloader']['num_workers']
+        num_workers=config['train']['num_workers']
     )
     print(f"Loaded {len(dataset)} images for evaluation from {csv_path}")
 
-    # 4. Load Model
+    # 4. Load Model with the correct number of input channels
     model = FractureDetector(
-        base_model_name=config['model']['base_model']
+        base_model_name=config['model']['base_model'],
+        in_channels=input_channels  # <-- This now uses the correct channel count
     ).to(device)
 
     checkpoint_path = os.path.join(run_dir, checkpoint_name)
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
         
-    # Load the state dict from the checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
