@@ -34,7 +34,7 @@ class RidgeletTransformd(MapTransform):
         super().__init__(keys, allow_missing_keys)
         
         # This transform is CPU-only, so the device parameter is removed.
-        self.frt = FRT(wavelet='db4')
+        self.frt = FRT(wavelet='sym8')
 
         if output_type not in ['reconstruction', 'sinogram']:
             raise ValueError("output_type must be 'reconstruction' or 'sinogram'.")

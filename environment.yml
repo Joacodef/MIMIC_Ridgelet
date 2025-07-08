@@ -3,7 +3,6 @@ name: mimic_gpu
 channels:
   - pytorch
   - nvidia
-  - astra-toolbox
   - conda-forge
   - defaults
 dependencies:
@@ -13,7 +12,6 @@ dependencies:
   - torchvision
   - torchaudio
   - pytorch-cuda=12.1
-  - astra-toolbox
 
   # Pip-installed packages
   - pip:
@@ -24,3 +22,5 @@ dependencies:
     - pywavelets
     - ptwt
     - monai
+    - scikit-learn
+    - wandb
