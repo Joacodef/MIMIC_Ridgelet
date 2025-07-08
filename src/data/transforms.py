@@ -16,29 +16,25 @@ from scipy.ndimage import gaussian_filter
 class RidgeletTransformd(MapTransform):
     """
     A MONAI-compatible dictionary-based transform to apply the Finite Ridgelet Transform (FRT).
-    This transform uses a rank-based hard threshold to extract a specific percentage of
-    the most significant linear features.
+    This transform uses a CPU-based backend (scikit-image and PyWavelets) and
+    applies BayesShrink adaptive thresholding for denoising.
     """
 
-    def __init__(self, keys: List[str], sparsity_level: float = 1.0, output_type: str = 'reconstruction', device: str = 'cpu', allow_missing_keys: bool = False):
+    def __init__(self, keys: List[str], output_type: str = 'reconstruction', allow_missing_keys: bool = False):
         """
         Initializes the transform.
 
         Args:
             keys (list): Keys of the data dictionary to apply the transform to.
-            sparsity_level (float): The fraction of the most significant wavelet detail
-                                    coefficients to KEEP. Must be between 0.0 and 1.0.
-                                    For example, 0.05 keeps the top 5%.
-            device (str): The device to run on, either 'cpu' or 'cuda'.
+            output_type (str): The desired output from the transform. Must be either
+                               'reconstruction' (for the denoised image) or 'sinogram'
+                               (for the denoised Radon transform).
             allow_missing_keys (bool): If True, do not raise an error for missing keys.
         """
         super().__init__(keys, allow_missing_keys)
-        if not 0.0 <= sparsity_level <= 1.0:
-            raise ValueError("sparsity_level must be between 0.0 and 1.0.")
-            
-        self.sparsity_level = sparsity_level
-        self.device = device
-        self.frt = FRT(wavelet='db4', device=device)
+        
+        # This transform is CPU-only, so the device parameter is removed.
+        self.frt = FRT(wavelet='db4')
 
         if output_type not in ['reconstruction', 'sinogram']:
             raise ValueError("output_type must be 'reconstruction' or 'sinogram'.")
@@ -51,62 +47,31 @@ class RidgeletTransformd(MapTransform):
                 img_tensor = d[key]
                 original_shape = img_tensor.shape[-2:]
                 
-                processed_img = img_tensor.squeeze()
+                # --- Convert to NumPy for CPU processing ---
+                img_np = img_tensor.squeeze().cpu().numpy()
 
-                if self.device == 'cuda':
-                    processed_output = self._apply_gpu(processed_img, original_shape)
+                # --- Apply the NumPy-based transform ---
+                coeffs = self.frt.forward(img_np)
+
+                if self.output_type == 'sinogram':
+                    processed_output = self.frt.reconstruct_sinogram(coeffs)
+                else:  # 'reconstruction'
+                    processed_output = self.frt.inverse(coeffs, original_shape)
+
+                # --- Resize and Normalize using NumPy ---
+                resized_output = resize(processed_output, original_shape, anti_aliasing=True)
+
+                min_val, max_val = np.min(resized_output), np.max(resized_output)
+                if max_val > min_val:
+                    normalized_output = (resized_output - min_val) / (max_val - min_val)
                 else:
-                    processed_output = self._apply_cpu(processed_img.cpu().numpy(), original_shape)
+                    normalized_output = np.zeros_like(resized_output)
                 
-                # Add a channel dimension back for MONAI compatibility
-                d[key] = processed_output.unsqueeze(0)
+                # --- Convert back to PyTorch Tensor ---
+                # Add a channel dimension for MONAI compatibility
+                output_tensor = torch.from_numpy(normalized_output).float().unsqueeze(0)
+                d[key] = output_tensor
         return d
-
-
-    def _apply_transform(self, img_data, original_shape):
-        """Helper to apply the correct transform based on output_type."""
-        coeffs = self.frt.forward(img_data, self.sparsity_level)
-
-        if self.output_type == 'sinogram':
-            return self.frt.reconstruct_sinogram(coeffs)
-        else: # 'reconstruction'
-            return self.frt.inverse(coeffs, original_shape)
-        
-        
-    def _apply_cpu(self, img_np: np.ndarray, original_shape: tuple) -> torch.Tensor:
-        """Applies the transform using CPU libraries."""
-        processed_output = self._apply_transform(img_np, original_shape)
-
-        # The sinogram and reconstruction might have different shapes, so we resize
-        resized_output = resize(processed_output, original_shape, anti_aliasing=True)
-        
-        min_val, max_val = np.min(resized_output), np.max(resized_output)
-        if max_val > min_val:
-            normalized_output = (resized_output - min_val) / (max_val - min_val)
-        else:
-            normalized_output = np.zeros_like(resized_output)
-
-        return torch.from_numpy(normalized_output).float()
-    
-
-    def _apply_gpu(self, img_tensor: torch.Tensor, original_shape: tuple) -> torch.Tensor:
-        """Applies the transform using GPU libraries."""
-        processed_output = self._apply_transform(img_tensor, original_shape)
-        
-        # Add dimensions for PyTorch interpolation
-        resized_output = processed_output.unsqueeze(0).unsqueeze(0)
-        resized_output = torch.nn.functional.interpolate(
-            resized_output, size=original_shape, mode='bilinear', align_corners=False
-        ).squeeze()
-
-        min_val, max_val = torch.min(resized_output), torch.max(resized_output)
-        if max_val > min_val:
-            normalized_output = (resized_output - min_val) / (max_val - min_val)
-        else:
-            normalized_output = torch.zeros_like(resized_output)
-            
-        return normalized_output.float()
-
     
 
 
