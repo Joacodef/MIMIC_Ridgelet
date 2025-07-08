@@ -6,6 +6,8 @@ import pywt
 
 from skimage.transform import resize
 
+from scipy.signal import convolve2d
+
 from monai.transforms import MapTransform
 from src.ridgelet.frt import FRT
 
@@ -216,3 +218,54 @@ class ConcatenateChannelsd(MapTransform):
                 d.pop(key, None)
         
         return d
+    
+
+# B3 spline kernel for the À Trous algorithm, as defined in the reference paper.
+# Source: D. Gupta et al. / Optik 125 (2014) 1417-1422
+B3_SPLINE_KERNEL = (1/256) * np.array([
+    [1, 4, 6, 4, 1],
+    [4, 16, 24, 16, 4],
+    [6, 24, 36, 24, 6],
+    [4, 16, 24, 16, 4],
+    [1, 4, 6, 4, 1]
+])
+
+def a_trous_decomposition(image: np.ndarray, scales: int) -> list[np.ndarray]:
+    """
+    Decomposes an image using the À Trous (with holes) algorithm.
+
+    This algorithm separates the image into multiple wavelet planes (detail layers)
+    at different scales and a final residual layer.
+
+    Args:
+        image (np.ndarray): The input image as a 2D NumPy array.
+        scales (int): The number of decomposition scales.
+
+    Returns:
+        list[np.ndarray]: A list of NumPy arrays containing the detail layers
+                          for each scale, with the final residual layer as the
+                          last element.
+    """
+    if not isinstance(image, np.ndarray) or image.ndim != 2:
+        raise TypeError("Input must be a 2D NumPy array.")
+    if not isinstance(scales, int) or scales <= 0:
+        raise ValueError("Scales must be a positive integer.")
+
+    detail_layers = []
+    current_image = image.copy()
+
+    for _ in range(scales):
+        # Convolve the current image with the B3 spline kernel to get the smoothed version
+        smoothed_image = convolve2d(current_image, B3_SPLINE_KERNEL, mode='same', boundary='symm')
+        
+        # The detail layer is the difference between the current and smoothed images
+        detail = current_image - smoothed_image
+        detail_layers.append(detail)
+        
+        # The new image for the next iteration is the smoothed image
+        current_image = smoothed_image
+
+    # The last layer is the residual (the final smoothed image)
+    detail_layers.append(current_image)
+    
+    return detail_layers
