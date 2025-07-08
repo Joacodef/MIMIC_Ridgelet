@@ -1,0 +1,26 @@
+# Conda environment configuration for the MIMIC-Ridgelet project
+name: mimic_gpu
+channels:
+  - pytorch
+  - nvidia
+  - astra-toolbox
+  - conda-forge
+  - defaults
+dependencies:
+  # Core conda packages for GPU support
+  - python=3.11
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+  - astra-toolbox
+
+  # Pip-installed packages
+  - pip:
+    - pandas
+    - matplotlib
+    - python-dotenv
+    - scikit-image
+    - pywavelets
+    - ptwt
+    - monai
