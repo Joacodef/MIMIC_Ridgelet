@@ -31,12 +31,11 @@ from monai.transforms import (
 )
 
 # Add project root to path to allow absolute imports
-import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from config.config import load_config, AppConfig
 from data.dataset import CXRClassificationDataset
-from models.model import FractureDetector
+from models.model import PathologyDetector
 from data.transforms import RidgeletTransformd, WaveletTransformd
 
 
@@ -46,20 +45,18 @@ def train_one_epoch(model, train_loader, optimizer, criterion, device, augment_f
     running_loss = 0.0
     
     progress_bar = tqdm(train_loader, desc="Training", unit="batch")
-    for batch_data in progress_bar:
+    for batch_data in progress_bar: # Use enumerate to get batch index
         images = batch_data["image"].to(device)
         labels = batch_data["label"].to(device).float().unsqueeze(1)
 
-        # Apply GPU transforms to each item in the batch individually
+        # Apply GPU-based augmentations to the entire batch at once
         if augment_fn:
-            processed_images = []
-            for i in range(images.shape[0]):
-                # Create a dictionary for the transform pipeline
-                data_item = {"image": images[i]}
-                processed_item = augment_fn(data_item)
-                processed_images.append(processed_item["image"])
-            # Stack the processed images back into a batch
-            images = torch.stack(processed_images)
+            # MONAI transforms are designed to operate on a dictionary of tensors.
+            # This applies the augmentations to the entire batch in a single, parallelized operation.
+            images = images.as_tensor()
+            data_dict = {"image": images}
+            transformed_dict = augment_fn(data_dict)
+            images = transformed_dict["image"]
 
         optimizer.zero_grad()
         
@@ -88,16 +85,12 @@ def validate(model, val_loader, criterion, device, transform_fn=None):
             images = batch_data["image"].to(device)
             labels = batch_data["label"].to(device).float().unsqueeze(1)
 
-            # Apply GPU transforms to each item in the batch individually
+            # Apply GPU-based transforms to the entire batch at once
             if transform_fn:
-                processed_images = []
-                for i in range(images.shape[0]):
-                    # Create a dictionary for the transform pipeline
-                    data_item = {"image": images[i]}
-                    processed_item = transform_fn(data_item)
-                    processed_images.append(processed_item["image"])
-                # Stack the processed images back into a batch
-                images = torch.stack(processed_images)
+                # MONAI transforms are designed to operate on a dictionary of tensors.
+                data_dict = {"image": images}
+                transformed_dict = transform_fn(data_dict)
+                images = transformed_dict["image"]
 
             outputs = model(images)
             loss = criterion(outputs, labels)
@@ -127,7 +120,7 @@ def run_training(
     Main function to run the training pipeline.
     This function is self-contained and responsible for its own artifacts.
     """
-    # --- 1. Load Environment Variables and Setup (Unchanged) ---
+    # --- 1. Load Environment Variables and Setup ---
     load_dotenv()
     IMAGE_ROOT_DIR = os.getenv("MIMIC_CXR_P_FOLDERS_PATH")
     PROJECT_DATA_FOLDER_PATH = os.getenv("PROJECT_DATA_FOLDER_PATH")
@@ -136,7 +129,7 @@ def run_training(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # --- 2. Setup Directories and Save Config (Unchanged) ---
+    # --- 2. Setup Directories and Save Config  ---
     if output_dir_override:
         output_run_dir = output_dir_override
     elif resume_dir:
@@ -157,7 +150,7 @@ def run_training(
         print(f"FATAL: Could not save configuration to {config_save_path}. Error: {e}")
         raise
 
-    # --- 3. CORRECTED Data Preparation & Transform Setup ---
+    # --- 3. Data Preparation & Transform Setup ---
     print("Setting up data pipelines...")
 
     # Define transforms that are ALWAYS applied on the CPU before caching
@@ -171,8 +164,20 @@ def run_training(
     # Define GPU transforms that will be applied AFTER data is loaded to the GPU
     gpu_train_transforms_list = []
     gpu_val_transforms_list = []
+
+    # Add GPU-based augmentations FIRST
+    gpu_train_transforms_list.append(
+        RandAffined(
+            keys=["image"],
+            prob=config.data.augmentations.rand_affine_prob,
+            rotate_range=config.data.augmentations.rotate_range,
+            scale_range=config.data.augmentations.scale_range,
+            device=device
+        )
+    )
     
     # Check if a special transform is needed and set input channels
+    print(f"Using transform: {config.data.transform_name}")
     if config.data.transform_name == 'wavelet':
         wavelet_params = asdict(config.data.transform_params.wavelet)
         # Instantiate the transform to be applied on the GPU
@@ -183,6 +188,7 @@ def run_training(
             device=device,
             **wavelet_params
         )
+        # Add the wavelet transform AFTER spatial augmentations
         gpu_train_transforms_list.append(wavelet_transform)
         gpu_val_transforms_list.append(wavelet_transform)
         
@@ -196,18 +202,7 @@ def run_training(
         raise NotImplementedError("The RidgeletTransformd is CPU-bound and not compatible with this GPU pipeline structure.")
     else:
         input_channels = 1
-    
-    # Add GPU-based augmentations to the list
-    gpu_train_transforms_list.append(
-        RandAffined(
-            keys=["image"],
-            prob=config.data.augmentations.rand_affine_prob,
-            rotate_range=config.data.augmentations.rotate_range,
-            scale_range=config.data.augmentations.scale_range,
-            device=device
-        )
-    )
-    
+
     # Compose the final transform pipelines
     gpu_train_transforms = Compose(gpu_train_transforms_list)
     gpu_val_transforms = Compose(gpu_val_transforms_list)
@@ -231,7 +226,6 @@ def run_training(
     )
 
     # 2. Wrap with PersistentDataset and provide the transforms.
-    # This is where the pre-processing and caching happens.
     persistent_cache_train_dir = os.path.join(config.data.persistent_cache_dir, cache_name, "train")
     persistent_cache_val_dir = os.path.join(config.data.persistent_cache_dir, cache_name, "validation")
 
@@ -245,7 +239,7 @@ def run_training(
         cache_dir=persistent_cache_train_dir
     )
     persistent_val_dataset = PersistentDataset(
-        data=base_val_dataset,
+        data=base_val_dataset, 
         transform=pre_cache_transforms, 
         cache_dir=persistent_cache_val_dir
     )
@@ -260,7 +254,7 @@ def run_training(
         data=persistent_val_dataset, cache_rate=RAM_CACHE_RATE, num_workers=config.dataloader.num_workers
     )
 
-    # 4. Create DataLoaders (this part remains the same)
+    # 4. Create DataLoaders
     dl_config = config.dataloader
     train_loader = DataLoader(
         train_dataset, batch_size=dl_config.batch_size, shuffle=True,
@@ -274,7 +268,7 @@ def run_training(
 
     # --- 4. Model, Loss, Optimizer ---
     print("Initializing model, criterion, and optimizer...")
-    model = FractureDetector(base_model_name=config.model.base_model, in_channels=input_channels).to(device)
+    model = PathologyDetector(base_model_name=config.model.base_model, in_channels=input_channels).to(device)
     
     loss_config = config.training.loss
     if loss_config.name.lower() == 'focalloss':
@@ -291,7 +285,7 @@ def run_training(
         optimizer, mode='min', factor=scheduler_config.factor, patience=scheduler_config.patience
     ) if scheduler_config.name.lower() == 'reducelronplateau' else None
 
-    # --- 5. Checkpoint Loading & Training State (Unchanged) ---
+    # --- 5. Checkpoint Loading & Training State ---
     start_epoch = 0
     best_val_auc = 0.0
     epochs_no_improve = 0
@@ -310,7 +304,7 @@ def run_training(
         else:
             print(f"Warning: Checkpoint not found at '{checkpoint_path}'. Starting a new run.")
 
-    # --- 6. W&B Integration (Unchanged) ---
+    # --- 6. W&B Integration ---
     if config.wandb.enabled:
         run_name = os.path.basename(output_run_dir)
         project_name = f"{config.wandb.project}_{config.pathology}"

@@ -31,7 +31,7 @@ dataloader:
 
 # Model configuration
 model:
-  base_model: "resnet18" # Or another model name FractureDetector supports
+  base_model: "resnet18" # Or another model name PathologyDetector supports
 
 # Training configuration
 training:

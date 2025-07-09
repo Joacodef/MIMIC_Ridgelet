@@ -3,7 +3,7 @@ import torch
 from torchvision import models
 
 # Adjust the import path if your project structure is different
-from src.models.model import FractureDetector
+from src.models.model import PathologyDetector
 
 # --- Test Fixtures ---
 
@@ -14,9 +14,9 @@ def dummy_input_tensor_factory():
         return torch.randn(batch_size, in_channels, height, width)
     return _create
 
-# --- Tests for FractureDetector ---
+# --- Tests for PathologyDetector ---
 
-class TestFractureDetector:
+class TestPathologyDetector:
 
     @pytest.mark.parametrize("base_model_name, in_channels", [
         ('resnet18', 1),
@@ -30,7 +30,7 @@ class TestFractureDetector:
         - The final FC layer has a single output neuron.
         """
         # Act
-        model = FractureDetector(base_model_name=base_model_name, in_channels=in_channels)
+        model = PathologyDetector(base_model_name=base_model_name, in_channels=in_channels)
         
         # Assert
         # Check that the first convolutional layer is correctly modified
@@ -50,7 +50,7 @@ class TestFractureDetector:
         output tensor of the expected shape (N, 1).
         """
         # Arrange
-        model = FractureDetector(base_model_name='resnet18', in_channels=in_channels)
+        model = PathologyDetector(base_model_name='resnet18', in_channels=in_channels)
         model.eval()  # Set to evaluation mode
         dummy_input = dummy_input_tensor_factory(batch_size, in_channels, 224, 224)
 
@@ -71,7 +71,7 @@ class TestFractureDetector:
         original_weights = original_model.conv1.weight.data.clone()
         
         # Act: Create our model with 1 input channel
-        custom_model = FractureDetector(base_model_name='resnet18', in_channels=1)
+        custom_model = PathologyDetector(base_model_name='resnet18', in_channels=1)
         custom_weights = custom_model.base_model.conv1.weight.data
         
         # Assert: Check if the custom weights are the mean of the original weights
@@ -87,4 +87,4 @@ class TestFractureDetector:
         """
         # Act & Assert
         with pytest.raises(ValueError, match="Unsupported base model: efficientnet"):
-            FractureDetector(base_model_name='efficientnet', in_channels=1)
+            PathologyDetector(base_model_name='efficientnet', in_channels=1)

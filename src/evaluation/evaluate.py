@@ -22,7 +22,7 @@ from monai.transforms import (
 
 # Absolute imports from the 'src' directory
 from src.data.dataset import CXRClassificationDataset
-from src.models.model import FractureDetector
+from src.models.model import PathologyDetector
 
 def load_config(run_dir):
     """Loads the configuration from a specific run directory."""
@@ -129,7 +129,7 @@ def evaluate(run_dir, data_split='test', checkpoint_name='best_model.pth'):
     print(f"Loaded {len(dataset)} images for evaluation from {csv_path}")
 
     # 4. Load Model with the correct number of input channels
-    model = FractureDetector(
+    model = PathologyDetector(
         base_model_name=config['model']['base_model'],
         in_channels=input_channels  # <-- This now uses the correct channel count
     ).to(device)

@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torchvision import models
 
-class FractureDetector(nn.Module):
+class PathologyDetector(nn.Module):
     """
     A ResNet-based model adapted for grayscale (1-channel) or multi-channel
     fracture detection.
