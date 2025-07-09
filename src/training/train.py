@@ -5,12 +5,15 @@ import torch.nn as nn
 import torch.optim.lr_scheduler as lr_scheduler
 from tqdm import tqdm
 from dotenv import load_dotenv
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, f1_score
+import numpy as np
 import yaml
 from datetime import datetime
 from dataclasses import asdict
 from typing import Optional
 import sys
+import tempfile
+import json
 
 import wandb
 
@@ -106,8 +109,12 @@ def validate(model, val_loader, criterion, device, transform_fn=None):
 
     val_loss = running_loss / len(val_loader)
     val_auc = roc_auc_score(all_labels, all_preds)
+
+    # Calculate F1 score using a 0.5 threshold
+    binary_preds = (np.array(all_preds) >= 0.5).astype(int)
+    val_f1 = f1_score(all_labels, binary_preds)
     
-    return val_loss, val_auc
+    return val_loss, val_auc, val_f1
 
 
 def run_training(
@@ -140,6 +147,15 @@ def run_training(
         output_run_dir = os.path.join(PROJECT_OUTPUT_FOLDER_PATH, "models", config.pathology, run_name)
 
     os.makedirs(output_run_dir, exist_ok=True)
+
+    # Set a custom temporary directory to be used by libraries like MONAI's CacheDataset.
+    # This avoids OS-specific issues with long paths or permissions in the default temp folder.
+    temp_dir = os.path.join(output_run_dir, "tmp")
+    os.makedirs(temp_dir, exist_ok=True)
+    tempfile.tempdir = temp_dir
+    print(f"Temporary directory for this run set to: {tempfile.tempdir}")
+
+    config_save_path = os.path.join(output_run_dir, "config.yaml")
 
     config_save_path = os.path.join(output_run_dir, "config.yaml")
     try:
@@ -210,52 +226,44 @@ def run_training(
 
     # --- Create Datasets & DataLoaders ---
     split_folder_name = f"split_{config.pathology}_{config.data.train_size}"
-    cache_name = f"{split_folder_name}_size-{config.data.image_size}" # Add image size to the name
 
     split_dir = os.path.join(PROJECT_DATA_FOLDER_PATH, "splits", split_folder_name)
     train_csv = train_csv_override if train_csv_override else os.path.join(split_dir, "train.csv")
     val_csv = os.path.join(split_dir, "validation.csv")
     print(f"Using training data from: {train_csv}")
 
-    # 1. Create the base datasets WITHOUT transforms.
-    # Their only job is to provide the file paths and labels.
-    base_train_dataset = CXRClassificationDataset(
-        csv_path=train_csv, image_root_dir=IMAGE_ROOT_DIR, transform=None
-    )
-    base_val_dataset = CXRClassificationDataset(
-        csv_path=val_csv, image_root_dir=IMAGE_ROOT_DIR, transform=None
-    )
 
-    # 2. Wrap with PersistentDataset and provide the transforms.
-    persistent_cache_train_dir = os.path.join(config.data.persistent_cache_dir, cache_name, "train")
-    persistent_cache_val_dir = os.path.join(config.data.persistent_cache_dir, cache_name, "validation")
-
-    os.makedirs(persistent_cache_train_dir, exist_ok=True)
-    os.makedirs(persistent_cache_val_dir, exist_ok=True)
-
-    print(f"Initializing persistent disk cache at: {os.path.join(config.data.persistent_cache_dir, cache_name)}")
-    persistent_train_dataset = PersistentDataset(
-        data=base_train_dataset,
-        transform=pre_cache_transforms, 
-        cache_dir=persistent_cache_train_dir
+    # 1. Create the base datasets WITH the pre-cache transforms.
+    # The transforms will be applied once and the results stored in RAM by CacheDataset.
+    print("Applying pre-cache transforms and initializing RAM cache...")
+    train_ds_with_pre_transforms = CXRClassificationDataset(
+        csv_path=train_csv, 
+        image_root_dir=IMAGE_ROOT_DIR, 
+        transform=pre_cache_transforms # Apply transforms directly
     )
-    persistent_val_dataset = PersistentDataset(
-        data=base_val_dataset, 
-        transform=pre_cache_transforms, 
-        cache_dir=persistent_cache_val_dir
+    val_ds_with_pre_transforms = CXRClassificationDataset(
+        csv_path=val_csv, 
+        image_root_dir=IMAGE_ROOT_DIR, 
+        transform=pre_cache_transforms # Apply transforms directly
     )
 
-    # 3. Wrap the persistent dataset with CacheDataset for in-memory caching.
+    # 2. Wrap with CacheDataset for in-memory caching.
     RAM_CACHE_RATE = config.training.ram_cache_rate
     print(f"Initializing in-memory CacheDataset with cache_rate={RAM_CACHE_RATE}...")
+
     train_dataset = CacheDataset(
-        data=persistent_train_dataset, cache_rate=RAM_CACHE_RATE, num_workers=config.dataloader.num_workers
+        data=train_ds_with_pre_transforms, # Use the transformed base dataset
+        cache_rate=RAM_CACHE_RATE, 
+        num_workers=config.dataloader.num_workers
     )
     val_dataset = CacheDataset(
-        data=persistent_val_dataset, cache_rate=RAM_CACHE_RATE, num_workers=config.dataloader.num_workers
+        data=val_ds_with_pre_transforms, # Use the transformed base dataset
+        cache_rate=RAM_CACHE_RATE, 
+        num_workers=config.dataloader.num_workers
     )
 
-    # 4. Create DataLoaders
+
+    # 3. Create DataLoaders
     dl_config = config.dataloader
     train_loader = DataLoader(
         train_dataset, batch_size=dl_config.batch_size, shuffle=True,
@@ -290,8 +298,11 @@ def run_training(
     start_epoch = 0
     best_val_auc = 0.0
     epochs_no_improve = 0
-    
+    training_history = []
+    log_file_path = os.path.join(output_run_dir, "training_log.json")
+
     if resume_dir:
+        # Load model checkpoint
         checkpoint_filename = "last_model.pth" if resume_from == "last" else config.training.output_model_name
         checkpoint_path = os.path.join(output_run_dir, checkpoint_filename)
         if os.path.isfile(checkpoint_path):
@@ -302,6 +313,17 @@ def run_training(
             start_epoch = checkpoint['epoch'] + 1
             best_val_auc = checkpoint.get('best_val_auc', 0.0)
             print(f"Resuming from epoch {start_epoch}. Best validation AUC: {best_val_auc:.4f}")
+
+            # Load and handle training history log
+            if os.path.isfile(log_file_path):
+                with open(log_file_path, 'r') as f:
+                    training_history = json.load(f)
+                
+                # If resuming from 'best', truncate history to match the checkpoint's epoch
+                if resume_from == 'best' and len(training_history) > start_epoch:
+                    print(f"Resuming from 'best' checkpoint. Truncating log from {len(training_history)} to {start_epoch} entries.")
+                    training_history = training_history[:start_epoch]
+
         else:
             print(f"Warning: Checkpoint not found at '{checkpoint_path}'. Starting a new run.")
 
@@ -321,13 +343,13 @@ def run_training(
             
             # This call now correctly passes the combined GPU transforms
             train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, augment_fn=gpu_train_transforms)
-            val_loss, val_auc = validate(model, val_loader, criterion, device, transform_fn=gpu_val_transforms)
+            val_loss, val_auc, val_f1 = validate(model, val_loader, criterion, device, transform_fn=gpu_val_transforms)
 
             if scheduler:
                 scheduler.step(val_loss)
             
             current_lr = optimizer.param_groups[0]['lr']
-            print(f"Epoch Summary: Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val AUC: {val_auc:.4f} | LR: {current_lr:.6f}")
+            print(f"Epoch Summary: Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val AUC: {val_auc:.4f} | Val F1: {val_f1:.4f} | LR: {current_lr:.6f}")
 
             if val_auc > best_val_auc:
                 print(f"Validation AUC improved from {best_val_auc:.4f} to {val_auc:.4f}. Saving best model...")
@@ -351,9 +373,22 @@ def run_training(
             if config.wandb.enabled:
                 wandb.log({
                     "epoch": epoch, "train_loss": train_loss, "validation_loss": val_loss,
-                    "validation_auc": val_auc, "learning_rate": current_lr
+                    "validation_auc": val_auc, "validation_f1": val_f1, "learning_rate": current_lr
                 })
-                
+            
+            # Log metrics to local JSON file
+            epoch_log = {
+                'epoch': epoch,
+                'train_loss': train_loss,
+                'validation_loss': val_loss,
+                'validation_auc': val_auc,
+                'validation_f1': val_f1,
+                'learning_rate': current_lr
+            }
+            training_history.append(epoch_log)
+            with open(log_file_path, 'w') as f:
+                json.dump(training_history, f, indent=4)
+
             if epochs_no_improve >= config.training.early_stopping_patience:
                 print(f"\nEarly stopping triggered after {config.training.early_stopping_patience} epochs without improvement.")
                 break
