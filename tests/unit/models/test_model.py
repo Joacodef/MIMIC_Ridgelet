@@ -86,5 +86,5 @@ class TestPathologyDetector:
         base_model_name is provided.
         """
         # Act & Assert
-        with pytest.raises(ValueError, match="Unsupported base model: efficientnet"):
+        with pytest.raises(ValueError, match="Unsupported base model family: efficientnet"):
             PathologyDetector(base_model_name='efficientnet', in_channels=1)

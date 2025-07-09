@@ -49,6 +49,14 @@ class LossConfig:
 
 @dataclass
 class ModelConfig:
+    """
+    Configuration for the model architecture.
+
+    Attributes:
+        base_model_name: The name of the base model architecture.
+                         Supported ResNet: 'resnet18', 'resnet34', 'resnet50'.
+                         Supported ViT: 'vit_b_16', 'vit_b_32'.
+    """
     base_model: str = "resnet18"
 
 @dataclass

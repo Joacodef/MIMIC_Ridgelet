@@ -124,17 +124,22 @@ def test_validate_calculates_auc_correctly():
     val_loader = [{"image": torch.randn(4, 1, 32, 32), "label": labels}]
 
     # Act
-    val_loss, val_auc, val_f1 = validate(model, val_loader, criterion, device)
+    val_loss, val_auc, val_f1, val_recall, val_precision, val_accuracy, cm \
+    = validate(model, val_loader, criterion, device)
 
     # Assert
     assert isinstance(val_loss, float)
     assert val_auc == 1.0
     # For perfect predictions, F1 score should also be 1.0
     assert val_f1 == 1.0
+    assert val_recall == 1.0
+    assert val_precision == 1.0
+    assert val_accuracy == 1.0
+    assert cm is not None  # Ensure confusion matrix is returned
 
 # --- Integration "Smoke Test" ---
 
-@patch('src.training.train.validate', return_value=(0.5, 0.95, 0.90))
+@patch('src.training.train.validate', return_value=(0.5, 0.95, 0.90, 0.92, 0.98, 0.97, None))
 @patch('src.training.train.train_one_epoch', return_value=0.8)
 @patch('src.training.train.wandb')
 @patch('src.training.train.os.getenv')

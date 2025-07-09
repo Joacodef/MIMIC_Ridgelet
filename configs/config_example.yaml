@@ -31,7 +31,7 @@ dataloader:
 
 # Model configuration
 model:
-  base_model: "resnet18" # Or another model name PathologyDetector supports
+  base_model: "resnet18" # 'resnet18', 'resnet34', 'resnet50', 'vit_b_16' or 'vit_b_32'.
 
 # Training configuration
 training:

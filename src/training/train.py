@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.optim.lr_scheduler as lr_scheduler
 from tqdm import tqdm
 from dotenv import load_dotenv
-from sklearn.metrics import roc_auc_score, f1_score
+from sklearn.metrics import roc_auc_score, f1_score, recall_score, precision_score, accuracy_score, confusion_matrix
 import numpy as np
 import yaml
 from datetime import datetime
@@ -113,8 +113,12 @@ def validate(model, val_loader, criterion, device, transform_fn=None):
     # Calculate F1 score using a 0.5 threshold
     binary_preds = (np.array(all_preds) >= 0.5).astype(int)
     val_f1 = f1_score(all_labels, binary_preds)
+    val_recall = recall_score(all_labels, binary_preds)
+    val_precision = precision_score(all_labels, binary_preds)
+    val_accuracy = accuracy_score(all_labels, binary_preds)
+    cm = confusion_matrix(all_labels, binary_preds)
     
-    return val_loss, val_auc, val_f1
+    return val_loss, val_auc, val_f1, val_recall, val_precision, val_accuracy, cm
 
 
 def run_training(
@@ -343,13 +347,16 @@ def run_training(
             
             # This call now correctly passes the combined GPU transforms
             train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, augment_fn=gpu_train_transforms)
-            val_loss, val_auc, val_f1 = validate(model, val_loader, criterion, device, transform_fn=gpu_val_transforms)
+            val_loss, val_auc, val_f1, val_recall, val_precision, val_accuracy, cm \
+            = validate(model, val_loader, criterion, device, transform_fn=gpu_val_transforms)
 
             if scheduler:
                 scheduler.step(val_loss)
             
             current_lr = optimizer.param_groups[0]['lr']
-            print(f"Epoch Summary: Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val AUC: {val_auc:.4f} | Val F1: {val_f1:.4f} | LR: {current_lr:.6f}")
+            print(f"Epoch Summary: Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val AUC: {val_auc:.4f} | Val F1: {val_f1:.4f} | Val Recall: {val_recall:.4f} | Val Precision: {val_precision:.4f} | Val Accuracy: {val_accuracy:.4f} | LR: {current_lr:.6f}")
+            print(f"Confusion Matrix:\n{cm}")
+
 
             if val_auc > best_val_auc:
                 print(f"Validation AUC improved from {best_val_auc:.4f} to {val_auc:.4f}. Saving best model...")
@@ -373,7 +380,9 @@ def run_training(
             if config.wandb.enabled:
                 wandb.log({
                     "epoch": epoch, "train_loss": train_loss, "validation_loss": val_loss,
-                    "validation_auc": val_auc, "validation_f1": val_f1, "learning_rate": current_lr
+                    "validation_auc": val_auc, "validation_f1": val_f1, "validation_recall": val_recall,
+                    "validation_precision": val_precision, "validation_accuracy": val_accuracy,
+                    "learning_rate": current_lr, "confusion_matrix": wandb.plot.confusion_matrix
                 })
             
             # Log metrics to local JSON file
@@ -383,7 +392,11 @@ def run_training(
                 'validation_loss': val_loss,
                 'validation_auc': val_auc,
                 'validation_f1': val_f1,
-                'learning_rate': current_lr
+                'validation_recall': val_recall,
+                'validation_precision': val_precision,
+                'validation_accuracy': val_accuracy,
+                'confusion_matrix': cm.tolist() if isinstance(cm, np.ndarray) else cm,
+                'learning_rate': current_lr                
             }
             training_history.append(epoch_log)
             with open(log_file_path, 'w') as f:
