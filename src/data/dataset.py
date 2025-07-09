@@ -54,7 +54,6 @@ class CXRClassificationDataset(Dataset):
         study_id = str(row['study_id'])
         dicom_id = row['dicom_id']
         
-        # --- MODIFIED ---
         # The label is now read from the generic 'label' column.
         label = torch.tensor(row['label'], dtype=torch.float32)
 

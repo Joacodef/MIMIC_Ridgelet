@@ -5,9 +5,10 @@ pathology: "Cardiomegaly"
 
 # Data configuration
 data:
-  split_folder_name: "split_2000"
+  train_size: 80000
   image_size: 256 # Used for resizing images
   transform_name: null # Can be 'wavelet', 'ridgelet', or null
+  persistent_cache_dir: "/path/to/your/disk/cache"
   transform_threshold_ratio: 0.1 # Parameter for applicable transforms
   
   transform_params:
@@ -17,7 +18,6 @@ data:
       levels: 3 
       # If true, concatenates the original image with the wavelet channels
       input_original_image: false 
-  multichannel: false # If true, the model receives both original and transformed images as input
   augmentations:
     rand_flip_prob: 0.5
     rand_affine_prob: 0.5

@@ -14,7 +14,10 @@ import sys
 
 import wandb
 
-from monai.data import DataLoader, CacheDataset
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+from monai.data import DataLoader, CacheDataset, PersistentDataset
 from monai.losses import FocalLoss
 from monai.transforms import (
     Compose,
@@ -44,16 +47,19 @@ def train_one_epoch(model, train_loader, optimizer, criterion, device, augment_f
     
     progress_bar = tqdm(train_loader, desc="Training", unit="batch")
     for batch_data in progress_bar:
-        # Move the dictionary of tensors to the correct device
-        data = {k: v.to(device) for k, v in batch_data.items() if isinstance(v, torch.Tensor)}
-        
-        # Apply the composed dictionary-based GPU transforms
-        if augment_fn:
-            data = augment_fn(data)
-
-        # Extract tensors for model input and loss calculation
-        images = data["image"]
+        images = batch_data["image"].to(device)
         labels = batch_data["label"].to(device).float().unsqueeze(1)
+
+        # Apply GPU transforms to each item in the batch individually
+        if augment_fn:
+            processed_images = []
+            for i in range(images.shape[0]):
+                # Create a dictionary for the transform pipeline
+                data_item = {"image": images[i]}
+                processed_item = augment_fn(data_item)
+                processed_images.append(processed_item["image"])
+            # Stack the processed images back into a batch
+            images = torch.stack(processed_images)
 
         optimizer.zero_grad()
         
@@ -79,16 +85,19 @@ def validate(model, val_loader, criterion, device, transform_fn=None):
     progress_bar = tqdm(val_loader, desc="Validation", unit="batch")
     with torch.no_grad():
         for batch_data in progress_bar:
-            # Move the dictionary of tensors to the correct device
-            data = {k: v.to(device) for k, v in batch_data.items() if isinstance(v, torch.Tensor)}
-
-            # Apply the validation transforms (e.g., WaveletTransformd)
-            if transform_fn:
-                data = transform_fn(data)
-
-            # Extract tensors for model input and loss calculation
-            images = data["image"]
+            images = batch_data["image"].to(device)
             labels = batch_data["label"].to(device).float().unsqueeze(1)
+
+            # Apply GPU transforms to each item in the batch individually
+            if transform_fn:
+                processed_images = []
+                for i in range(images.shape[0]):
+                    # Create a dictionary for the transform pipeline
+                    data_item = {"image": images[i]}
+                    processed_item = transform_fn(data_item)
+                    processed_images.append(processed_item["image"])
+                # Stack the processed images back into a batch
+                images = torch.stack(processed_images)
 
             outputs = model(images)
             loss = criterion(outputs, labels)
@@ -205,22 +214,63 @@ def run_training(
 
     # --- Create Datasets & DataLoaders ---
     split_folder_name = f"split_{config.pathology}_{config.data.train_size}"
+    cache_name = f"{split_folder_name}_size-{config.data.image_size}" # Add image size to the name
+
     split_dir = os.path.join(PROJECT_DATA_FOLDER_PATH, "splits", split_folder_name)
     train_csv = train_csv_override if train_csv_override else os.path.join(split_dir, "train.csv")
     val_csv = os.path.join(split_dir, "validation.csv")
     print(f"Using training data from: {train_csv}")
 
-    base_train_dataset = CXRClassificationDataset(csv_path=train_csv, image_root_dir=IMAGE_ROOT_DIR, transform=pre_cache_transforms)
-    base_val_dataset = CXRClassificationDataset(csv_path=val_csv, image_root_dir=IMAGE_ROOT_DIR, transform=pre_cache_transforms)
+    # 1. Create the base datasets WITHOUT transforms.
+    # Their only job is to provide the file paths and labels.
+    base_train_dataset = CXRClassificationDataset(
+        csv_path=train_csv, image_root_dir=IMAGE_ROOT_DIR, transform=None
+    )
+    base_val_dataset = CXRClassificationDataset(
+        csv_path=val_csv, image_root_dir=IMAGE_ROOT_DIR, transform=None
+    )
 
+    # 2. Wrap with PersistentDataset and provide the transforms.
+    # This is where the pre-processing and caching happens.
+    persistent_cache_train_dir = os.path.join(config.data.persistent_cache_dir, cache_name, "train")
+    persistent_cache_val_dir = os.path.join(config.data.persistent_cache_dir, cache_name, "validation")
+
+    os.makedirs(persistent_cache_train_dir, exist_ok=True)
+    os.makedirs(persistent_cache_val_dir, exist_ok=True)
+
+    print(f"Initializing persistent disk cache at: {os.path.join(config.data.persistent_cache_dir, cache_name)}")
+    persistent_train_dataset = PersistentDataset(
+        data=base_train_dataset,
+        transform=pre_cache_transforms, 
+        cache_dir=persistent_cache_train_dir
+    )
+    persistent_val_dataset = PersistentDataset(
+        data=base_val_dataset,
+        transform=pre_cache_transforms, 
+        cache_dir=persistent_cache_val_dir
+    )
+
+    # 3. Wrap the persistent dataset with CacheDataset for in-memory caching.
     RAM_CACHE_RATE = config.training.ram_cache_rate
     print(f"Initializing in-memory CacheDataset with cache_rate={RAM_CACHE_RATE}...")
-    train_dataset = CacheDataset(data=base_train_dataset, cache_rate=RAM_CACHE_RATE, num_workers=config.dataloader.num_workers)
-    val_dataset = CacheDataset(data=base_val_dataset, cache_rate=RAM_CACHE_RATE, num_workers=config.dataloader.num_workers)
+    train_dataset = CacheDataset(
+        data=persistent_train_dataset, cache_rate=RAM_CACHE_RATE, num_workers=config.dataloader.num_workers
+    )
+    val_dataset = CacheDataset(
+        data=persistent_val_dataset, cache_rate=RAM_CACHE_RATE, num_workers=config.dataloader.num_workers
+    )
 
+    # 4. Create DataLoaders (this part remains the same)
     dl_config = config.dataloader
-    train_loader = DataLoader(train_dataset, batch_size=dl_config.batch_size, shuffle=True, num_workers=dl_config.num_workers, pin_memory=True, persistent_workers=True)
-    val_loader = DataLoader(val_dataset, batch_size=dl_config.batch_size, shuffle=False, num_workers=dl_config.num_workers, pin_memory=True, persistent_workers=True)
+    train_loader = DataLoader(
+        train_dataset, batch_size=dl_config.batch_size, shuffle=True,
+        num_workers=dl_config.num_workers, pin_memory=True, persistent_workers=True
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=dl_config.batch_size, shuffle=False,
+        num_workers=dl_config.num_workers, pin_memory=True, persistent_workers=True
+    )
+
 
     # --- 4. Model, Loss, Optimizer ---
     print("Initializing model, criterion, and optimizer...")

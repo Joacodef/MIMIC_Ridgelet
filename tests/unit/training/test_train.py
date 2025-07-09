@@ -40,13 +40,20 @@ def mock_model():
     return nn.Sequential(nn.Conv2d(1, 1, 3), nn.AdaptiveAvgPool2d(1), nn.Flatten(), nn.Linear(1, 1))
 
 @pytest.fixture
-def basic_config(tmp_path):
+def basic_config(tmp_path: Path) -> AppConfig:
     """Creates a minimal but valid AppConfig for testing the run_training function."""
+    
+    # Define and create a temporary directory for the cache
+    cache_directory = tmp_path / "persistent_cache"
+    cache_directory.mkdir()
+
     return AppConfig(
         pathology="test_pathology",
         data=DataConfig(
             train_size=100,
             image_size=32,
+            # This is the fix 👇
+            persistent_cache_dir=str(cache_directory),
             transform_name='none',
             augmentations=AugmentationConfig(),
             transform_params=TransformParams(
@@ -54,7 +61,6 @@ def basic_config(tmp_path):
             )
         ),
         model=ModelConfig(base_model='resnet18'),
-        # --- FIX: Set num_workers to 1 to satisfy persistent_workers=True ---
         dataloader=DataLoaderConfig(batch_size=2, num_workers=1),
         training=TrainingConfig(
             epochs=1,

@@ -27,6 +27,7 @@ class TransformParams:
 @dataclass
 class DataConfig:
     train_size: int
+    persistent_cache_dir: str
     image_size: int = 256
     augmentations: AugmentationConfig = field(default_factory=AugmentationConfig)
     transform_name: Optional[str] = None
