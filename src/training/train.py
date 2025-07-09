@@ -88,6 +88,7 @@ def validate(model, val_loader, criterion, device, transform_fn=None):
             # Apply GPU-based transforms to the entire batch at once
             if transform_fn:
                 # MONAI transforms are designed to operate on a dictionary of tensors.
+                images = images.as_tensor()
                 data_dict = {"image": images}
                 transformed_dict = transform_fn(data_dict)
                 images = transformed_dict["image"]
@@ -258,11 +259,11 @@ def run_training(
     dl_config = config.dataloader
     train_loader = DataLoader(
         train_dataset, batch_size=dl_config.batch_size, shuffle=True,
-        num_workers=dl_config.num_workers, pin_memory=True, persistent_workers=True
+        num_workers=dl_config.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=8
     )
     val_loader = DataLoader(
         val_dataset, batch_size=dl_config.batch_size, shuffle=False,
-        num_workers=dl_config.num_workers, pin_memory=True, persistent_workers=True
+        num_workers=dl_config.num_workers, pin_memory=True, persistent_workers=True, prefetch_factor=8
     )
 
 

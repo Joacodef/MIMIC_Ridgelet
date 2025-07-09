@@ -57,7 +57,7 @@ class PathologyDetector(nn.Module):
         # replicate it for the new number of input channels.
         # This allows leveraging pre-trained features for multi-channel inputs.
         averaged_weights = original_conv1.weight.data.mean(dim=1, keepdim=True)
-        self.base_model.conv1.weight.data = averaged_weights.repeat(1, in_channels, 1, 1) # MODIFICATION: Repeat for in_channels
+        self.base_model.conv1.weight.data = averaged_weights.repeat(1, in_channels, 1, 1) 
 
         # 3. Modify the final classification layer for binary output
         # Get the number of input features for the final layer
