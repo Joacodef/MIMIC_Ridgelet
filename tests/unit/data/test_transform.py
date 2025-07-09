@@ -5,6 +5,7 @@ from unittest.mock import patch, MagicMock
 
 # By running pytest from the project root, it will automatically find the `src` module.
 from src.data.transforms import (
+    _normalize_channel_torch,
     _normalize_channel,
     WaveletTransformd,
     RidgeletTransformd,
@@ -36,42 +37,60 @@ def test_normalize_channel(input_array, expected_output):
     normalized = _normalize_channel(input_array)
     assert np.allclose(normalized, expected_output, atol=1e-6)
 
+# --- NEW: Tests for _normalize_channel_torch ---
+
+@pytest.mark.parametrize("input_tensor, expected_tensor", [
+    (torch.tensor([0., 50., 100.]), torch.tensor([0.0, 0.5, 1.0])),
+    (torch.tensor([10., 10., 10.]), torch.tensor([0.0, 0.0, 0.0])),
+    (torch.tensor([[0., 2.], [4., 6.]]), torch.tensor([[0., 1/3], [2/3, 1.0]])),
+])
+def test_normalize_channel_torch(input_tensor, expected_tensor):
+    """Tests if _normalize_channel_torch correctly scales tensors to the [0, 1] range."""
+    normalized = _normalize_channel_torch(input_tensor)
+    assert torch.allclose(normalized, expected_tensor, atol=1e-6)
+
 # --- Tests for WaveletTransformd ---
 
 class TestWaveletTransformd:
     def test_basic_execution(self, sample_image_dict):
-        """Tests standard execution with default settings."""
-        transform = WaveletTransformd(keys=["image"], output_key="wavelet")
+        """Tests standard execution with default settings on CPU."""
+        # Pass device='cpu' to ensure test works without a GPU
+        transform = WaveletTransformd(keys=["image"], output_key="wavelet", device='cpu')
         result = transform(sample_image_dict)
         
         assert "wavelet" in result
         assert isinstance(result["wavelet"], torch.Tensor)
         
-        # For a 64x64 image, max_levels is 5. Default is to use max.
+        # For a 64x64 image, max_levels is 6 with 'haar'.
         # Channels = 1 (approx) + 3 * 6 (details) = 19.
-        assert result["wavelet"].shape == (19, 64, 64)
+        # Shape is now (Batch, Channels, H, W)
+        assert result["wavelet"].shape == (1, 19, 64, 64)
 
     def test_with_original_image(self, sample_image_dict):
         """Tests the 'input_original_image' flag."""
-        transform = WaveletTransformd(keys=["image"], output_key="wavelet", input_original_image=True, levels=2)
+        transform = WaveletTransformd(
+            keys=["image"], output_key="wavelet", input_original_image=True, levels=2, device='cpu'
+        )
         result = transform(sample_image_dict)
         
         # Channels = 1 (original) + 1 (approx) + 3 * 2 (details) = 8
-        assert result["wavelet"].shape[0] == 8
-        # The first channel should be the original image
-        assert torch.equal(result["wavelet"][0], sample_image_dict["image"].squeeze(0))
+        assert result["wavelet"].shape == (1, 8, 64, 64)
+        # The first channel of the first batch item should be the original image
+        assert torch.equal(result["wavelet"][0, 0], sample_image_dict["image"].squeeze(0).squeeze(0))
 
     def test_specific_levels(self, sample_image_dict):
         """Tests setting a specific number of decomposition levels."""
-        transform = WaveletTransformd(keys=["image"], output_key="wavelet", levels=3)
+        transform = WaveletTransformd(keys=["image"], output_key="wavelet", levels=3, device='cpu')
         result = transform(sample_image_dict)
         # Channels = 1 (approx) + 3 * 3 (details) = 10
-        assert result["wavelet"].shape == (10, 64, 64)
+        assert result["wavelet"].shape == (1, 10, 64, 64)
 
     def test_thresholding(self, sample_image_dict):
         """Ensures thresholding runs and alters the output."""
-        transform_no_thresh = WaveletTransformd(keys=["image"], output_key="wavelet", levels=2)
-        transform_with_thresh = WaveletTransformd(keys=["image"], output_key="wavelet", levels=2, threshold_ratio=0.8)
+        transform_no_thresh = WaveletTransformd(keys=["image"], output_key="wavelet", levels=2, device='cpu')
+        transform_with_thresh = WaveletTransformd(
+            keys=["image"], output_key="wavelet", levels=2, threshold_ratio=0.8, device='cpu'
+        )
         
         result_no_thresh = transform_no_thresh(sample_image_dict)
         result_with_thresh = transform_with_thresh(sample_image_dict)

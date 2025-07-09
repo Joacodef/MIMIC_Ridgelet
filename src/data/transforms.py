@@ -2,9 +2,11 @@
 
 import numpy as np
 import torch
-import pywt
+import ptwt, pywt
+import math
 
 from skimage.transform import resize
+import torch.nn.functional as F
 
 from scipy.signal import convolve2d
 
@@ -23,10 +25,58 @@ def _normalize_channel(channel: np.ndarray) -> np.ndarray:
         return (channel - min_val) / (max_val - min_val)
     return np.zeros_like(channel)
 
+def _normalize_channel_torch(channel: torch.Tensor) -> torch.Tensor:
+    """Normalizes a single channel tensor to the [0, 1] range."""
+    min_val, max_val = torch.min(channel), torch.max(channel)
+    if max_val > min_val:
+        return (channel - min_val) / (max_val - min_val)
+    return torch.zeros_like(channel)
+
+def dwt_max_level(data_len: int, wavelet: str) -> int:
+    """
+    Calculates the maximum level of wavelet decomposition using pywt.
+    The main transform is still done with ptwt on the GPU; this helper
+    is a lightweight way to get wavelet properties.
+
+    Args:
+        data_len (int): The length of the data/image dimension.
+        wavelet (str): The name of the wavelet.
+
+    Returns:
+        int: The maximum number of decomposition levels.
+    """
+    try:
+        # Use the pywt library to create a wavelet object
+        w = pywt.Wavelet(wavelet)
+        filter_len = w.dec_len
+    except ValueError:
+        # Fallback for unrecognized wavelets
+        filter_len = 2  # Haar's filter length as a safe default
+
+    if filter_len <= 1:
+        return 0
+    
+    # Formula is equivalent to the one used in PyWavelets
+    return int(math.log2(data_len / (filter_len - 1)))
+
+def soft_threshold_torch(data: torch.Tensor, value: float) -> torch.Tensor:
+    """
+    Performs soft thresholding on a PyTorch tensor, replicating
+    pywt.threshold(data, value, mode='soft').
+
+    Args:
+        data (torch.Tensor): The input tensor.
+        value (float): The threshold value.
+
+    Returns:
+        torch.Tensor: The thresholded tensor.
+    """
+    return torch.sign(data) * F.relu(torch.abs(data) - value)
+
 class WaveletTransformd(MapTransform):
     """
-    Applies a multi-level Haar wavelet decomposition and stacks the coefficient
-    maps into separate channels for model input.
+    Applies a multi-level wavelet decomposition on the GPU and stacks the coefficient
+    maps into separate channels for model input. This transform is batch-aware.
     """
     def __init__(
         self,
@@ -36,22 +86,16 @@ class WaveletTransformd(MapTransform):
         levels: Optional[int] = None,
         threshold_ratio: float = 0.0,
         input_original_image: bool = False,
+        device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
         allow_missing_keys: bool = False,
     ):
-        """
-        Args:
-            keys (List[str]): Keys of the data dictionary to apply the transform to.
-            output_key (str): Key for the output in the data dictionary.
-            threshold_ratio (float): Ratio for soft thresholding detail coefficients. If 0, no thresholding is applied.
-            input_original_image (bool): If True, concatenates the original image as the first channel.
-            allow_missing_keys (bool): If True, does not raise an exception if a key is missing.
-        """
         super().__init__(keys, allow_missing_keys)
         self.output_key = output_key
         self.wavelet_name = wavelet_name
         self.levels = levels
-        self.threshold_ratio = threshold_ratio        
+        self.threshold_ratio = threshold_ratio
         self.input_original_image = input_original_image
+        self.device = torch.device(device)
 
     def __call__(self, data: Mapping[Hashable, Any]) -> Dict[Hashable, Any]:
         d = dict(data)
@@ -59,55 +103,68 @@ class WaveletTransformd(MapTransform):
             if key not in d:
                 continue
 
-            image_tensor = d[key]
-            image_np = image_tensor.cpu().numpy().squeeze()
-            original_shape = image_np.shape
-            max_possible_levels = pywt.dwt_max_level(min(original_shape), self.wavelet_name)
+            image_batch = d[key].to(self.device)
+            processed_images = []
 
-            # 1. Determine the number of decomposition levels
-            if self.levels is None or self.levels <= 0:
-                num_levels = max_possible_levels
-            else:
-                # Use specified level, but cap it at the maximum possible
-                num_levels = min(self.levels, max_possible_levels)
+            # Loop over each image in the batch
+            for single_image_tensor in image_batch:
+                img_to_process = single_image_tensor.squeeze()
+                if img_to_process.ndim != 2:
+                    raise ValueError(f"Could not extract a 2D image. Input slice shape: {img_to_process.shape}.")
 
-            if num_levels == 0:
-                d[self.output_key] = image_tensor
-                continue
+                original_shape = img_to_process.shape
                 
-            # 2. Decompose the image
-            coeffs = pywt.wavedec2(image_np, self.wavelet_name, level=num_levels)
-            # 3. Optional Thresholding
-            if self.threshold_ratio > 0.0:
-                detail_coeffs_flat = np.concatenate([np.ravel(detail) for level in coeffs[1:] for detail in level])
-                if detail_coeffs_flat.size > 0:
-                    threshold_value = np.percentile(np.abs(detail_coeffs_flat), self.threshold_ratio * 100)
-                    thresholded_coeffs = [coeffs[0]]
-                    for level_details in coeffs[1:]:
-                        thresholded_coeffs.append(tuple(pywt.threshold(detail, threshold_value, mode='soft') for detail in level_details))
-                    coeffs = thresholded_coeffs
+                max_possible_levels = dwt_max_level(min(original_shape), self.wavelet_name)
+                num_levels = min(self.levels, max_possible_levels) if self.levels is not None and self.levels > 0 else max_possible_levels
 
-            # 4. Resize all coefficient maps and collect them
-            output_channels = []
-            
-            approx_resized = resize(coeffs[0], original_shape, anti_aliasing=True)
-            output_channels.append(_normalize_channel(approx_resized))
+                if num_levels == 0:
+                    processed_images.append(single_image_tensor)
+                    continue
 
-            for level_details in coeffs[1:]:
-                for detail_coeff in level_details:
-                    detail_resized = resize(detail_coeff, original_shape, anti_aliasing=True)
-                    output_channels.append(_normalize_channel(detail_resized))
-            
-            # 5. Stack channels into a single tensor
-            wavelet_tensor = torch.from_numpy(np.stack(output_channels, axis=0)).float()
+                coeffs = ptwt.wavedec2(img_to_process, self.wavelet_name, level=num_levels)
+                
+                if self.threshold_ratio > 0.0:
+                    detail_coeffs_flat = torch.cat([torch.ravel(detail) for c in coeffs[1:] for detail in c])
+                    if detail_coeffs_flat.numel() > 0:
+                        threshold_value = torch.quantile(torch.abs(detail_coeffs_flat), self.threshold_ratio)
+                        thresholded_coeffs = [coeffs[0]]
+                        for level_details in coeffs[1:]:
+                            thresholded_coeffs.append(tuple(soft_threshold_torch(detail, threshold_value) for detail in level_details))
+                        coeffs = thresholded_coeffs
 
-            # 6. Optionally concatenate the original image
-            if self.input_original_image:
-                final_tensor = torch.cat([image_tensor, wavelet_tensor], dim=0)
-            else:
-                final_tensor = wavelet_tensor
+                output_channels = []
+                
+                # Resize and normalize coefficients
+                all_coeffs = [coeffs[0]] + [detail for level in coeffs[1:] for detail in level]
+                for coeff in all_coeffs:
+                    if coeff.ndim == 2:
+                        coeff_4d = coeff.unsqueeze(0).unsqueeze(0)
+                    else:
+                        coeff_4d = coeff.unsqueeze(0)
+                        
+                    resized_coeff = F.interpolate(coeff_4d, size=original_shape, mode='bilinear', align_corners=False).squeeze()
+                    output_channels.append(_normalize_channel_torch(resized_coeff))
+                
+                wavelet_tensor = torch.stack(output_channels, dim=0)
+
+                if self.input_original_image:
+                    # Robustly reshape original image to (1, H, W) for concatenation
+                    original_img_for_cat = single_image_tensor.view(1, *original_shape)
+                    final_tensor = torch.cat([original_img_for_cat, wavelet_tensor], dim=0)
+                else:
+                    final_tensor = final_tensor = wavelet_tensor
+                
+                processed_images.append(final_tensor)
+
+            # Stack the list of processed images into a single batch tensor
+            output_batch = torch.stack(processed_images)
             
-            d[self.output_key] = final_tensor
+            # Use the specified output_key
+            d[self.output_key] = output_batch
+            
+            # Clean up the original key if it's different from the output key
+            if key != self.output_key:
+                del d[key]
 
         return d
     

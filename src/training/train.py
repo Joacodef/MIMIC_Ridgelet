@@ -24,7 +24,7 @@ from monai.transforms import (
     CopyItemsd,
     DeleteItemsd,
     Resized,
-    RandAffine,
+    RandAffined,
 )
 
 # Add project root to path to allow absolute imports
@@ -44,13 +44,16 @@ def train_one_epoch(model, train_loader, optimizer, criterion, device, augment_f
     
     progress_bar = tqdm(train_loader, desc="Training", unit="batch")
     for batch_data in progress_bar:
-        images = batch_data["image"].to(device)
-        labels = batch_data["label"].to(device).float().unsqueeze(1)
-
-        # Apply GPU augmentations if provided
+        # Move the dictionary of tensors to the correct device
+        data = {k: v.to(device) for k, v in batch_data.items() if isinstance(v, torch.Tensor)}
+        
+        # Apply the composed dictionary-based GPU transforms
         if augment_fn:
-            # Apply the transform to each image in the batch individually and stack them back together
-            images = torch.stack([augment_fn(image) for image in images])
+            data = augment_fn(data)
+
+        # Extract tensors for model input and loss calculation
+        images = data["image"]
+        labels = batch_data["label"].to(device).float().unsqueeze(1)
 
         optimizer.zero_grad()
         
@@ -65,7 +68,8 @@ def train_one_epoch(model, train_loader, optimizer, criterion, device, augment_f
         
     return running_loss / len(train_loader)
 
-def validate(model, val_loader, criterion, device):
+
+def validate(model, val_loader, criterion, device, transform_fn=None):
     """Performs validation on the validation set."""
     model.eval()
     running_loss = 0.0
@@ -75,7 +79,15 @@ def validate(model, val_loader, criterion, device):
     progress_bar = tqdm(val_loader, desc="Validation", unit="batch")
     with torch.no_grad():
         for batch_data in progress_bar:
-            images = batch_data["image"].to(device)
+            # Move the dictionary of tensors to the correct device
+            data = {k: v.to(device) for k, v in batch_data.items() if isinstance(v, torch.Tensor)}
+
+            # Apply the validation transforms (e.g., WaveletTransformd)
+            if transform_fn:
+                data = transform_fn(data)
+
+            # Extract tensors for model input and loss calculation
+            images = data["image"]
             labels = batch_data["label"].to(device).float().unsqueeze(1)
 
             outputs = model(images)
@@ -94,6 +106,7 @@ def validate(model, val_loader, criterion, device):
     
     return val_loss, val_auc
 
+
 def run_training(
     config: AppConfig,
     resume_dir: Optional[str] = None,
@@ -105,7 +118,7 @@ def run_training(
     Main function to run the training pipeline.
     This function is self-contained and responsible for its own artifacts.
     """
-    # --- 1. Load Environment Variables and Setup ---
+    # --- 1. Load Environment Variables and Setup (Unchanged) ---
     load_dotenv()
     IMAGE_ROOT_DIR = os.getenv("MIMIC_CXR_P_FOLDERS_PATH")
     PROJECT_DATA_FOLDER_PATH = os.getenv("PROJECT_DATA_FOLDER_PATH")
@@ -114,13 +127,12 @@ def run_training(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # --- 2. Setup Directories and Save Config ---
+    # --- 2. Setup Directories and Save Config (Unchanged) ---
     if output_dir_override:
         output_run_dir = output_dir_override
     elif resume_dir:
         output_run_dir = resume_dir
     else:
-        # Use run_name from config if provided, otherwise generate one
         run_name = getattr(config, 'run_name', None) or f"{config.model.base_model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         output_run_dir = os.path.join(PROJECT_OUTPUT_FOLDER_PATH, "models", config.pathology, run_name)
 
@@ -136,56 +148,62 @@ def run_training(
         print(f"FATAL: Could not save configuration to {config_save_path}. Error: {e}")
         raise
 
-    # --- 3. Data Preparation ---
-    print("Setting up data pipelines with in-memory caching...")
+    # --- 3. CORRECTED Data Preparation & Transform Setup ---
+    print("Setting up data pipelines...")
 
-    # Define transforms that are ALWAYS applied before caching (heavy, deterministic)
-    pre_cache_transforms_list = [
+    # Define transforms that are ALWAYS applied on the CPU before caching
+    pre_cache_transforms = Compose([
         LoadImaged(keys=["image"]),
         EnsureChannelFirstd(keys=["image"]),
         ScaleIntensityRanged(keys=["image"], a_min=0.0, a_max=255.0, b_min=0.0, b_max=1.0, clip=True),
         Resized(keys=["image"], spatial_size=(config.data.image_size, config.data.image_size)),
-    ]
-
-    # Define the key for the transformed image output
-    transform_output_key = "image_transformed"
-
-    # Add the special transform (Wavelet/Ridgelet) to the pre-cache list
-    if config.data.transform_name == 'ridgelet':
-        ridgelet_params = asdict(config.data.transform_params.ridgelet)
-        pre_cache_transforms_list.append(RidgeletTransformd(keys=["image"], output_key=transform_output_key, threshold_ratio=config.data.transform_threshold_ratio, **ridgelet_params))
-    elif config.data.transform_name == 'wavelet':
+    ])
+    
+    # Define GPU transforms that will be applied AFTER data is loaded to the GPU
+    gpu_train_transforms_list = []
+    gpu_val_transforms_list = []
+    
+    # Check if a special transform is needed and set input channels
+    if config.data.transform_name == 'wavelet':
         wavelet_params = asdict(config.data.transform_params.wavelet)
-        pre_cache_transforms_list.append(WaveletTransformd(keys=["image"], output_key=transform_output_key, threshold_ratio=config.data.transform_threshold_ratio, **wavelet_params))
-
-    # If a special transform was applied, dynamically determine the number of output channels
-    transform_instance = next((t for t in pre_cache_transforms_list if isinstance(t, (WaveletTransformd, RidgeletTransformd))), None)
-
-    if transform_instance is not None:
-        # Create a dummy dictionary that mimics the data state at this point in the pipeline
-        dummy_data = {
-            "image": torch.randn(1, config.data.image_size, config.data.image_size)
-        }
-        # Apply the transform to the dummy data to inspect the output
-        transformed_dummy = transform_instance(dummy_data)
-        # Get the number of channels from the shape of the output tensor
-        input_channels = transformed_dummy[transform_output_key].shape[0]
-        print(f"'{config.data.transform_name}' transform will be used. Model input channels dynamically set to: {input_channels}")
-
-        # The final tensor is in 'transform_output_key'. We need to make it the 'image' key.
-        pre_cache_transforms_list.extend([
-            DeleteItemsd(keys=["image"]),
-            CopyItemsd(keys=[transform_output_key], names=["image"]),
-            DeleteItemsd(keys=[transform_output_key]),
-        ])
+        # Instantiate the transform to be applied on the GPU
+        wavelet_transform = WaveletTransformd(
+            keys=["image"], 
+            output_key="image", # The transform will now overwrite the 'image' key
+            threshold_ratio=config.data.transform_threshold_ratio,
+            device=device,
+            **wavelet_params
+        )
+        gpu_train_transforms_list.append(wavelet_transform)
+        gpu_val_transforms_list.append(wavelet_transform)
+        
+        # Calculate channels by applying the transform to a dummy tensor on the correct device
+        dummy_tensor = torch.randn(1, 1, config.data.image_size, config.data.image_size, device=device)
+        transformed_dummy = wavelet_transform({"image": dummy_tensor})
+        input_channels = transformed_dummy["image"].shape[1]
+        print(f"'wavelet' transform will be used. Model input channels dynamically set to: {input_channels}")
+        
+    elif config.data.transform_name == 'ridgelet':
+        raise NotImplementedError("The RidgeletTransformd is CPU-bound and not compatible with this GPU pipeline structure.")
     else:
-        # Default input channels is 1 (standard grayscale)
         input_channels = 1
+    
+    # Add GPU-based augmentations to the list
+    gpu_train_transforms_list.append(
+        RandAffined(
+            keys=["image"],
+            prob=config.data.augmentations.rand_affine_prob,
+            rotate_range=config.data.augmentations.rotate_range,
+            scale_range=config.data.augmentations.scale_range,
+            device=device
+        )
+    )
+    
+    # Compose the final transform pipelines
+    gpu_train_transforms = Compose(gpu_train_transforms_list)
+    gpu_val_transforms = Compose(gpu_val_transforms_list)
 
-    pre_cache_transforms = Compose(pre_cache_transforms_list)
-
-    # --- Create Base Datasets ---
-    # The base dataset is now responsible for loading and applying the heavy transforms once
+    # --- Create Datasets & DataLoaders ---
     split_folder_name = f"split_{config.pathology}_{config.data.train_size}"
     split_dir = os.path.join(PROJECT_DATA_FOLDER_PATH, "splits", split_folder_name)
     train_csv = train_csv_override if train_csv_override else os.path.join(split_dir, "train.csv")
@@ -195,38 +213,17 @@ def run_training(
     base_train_dataset = CXRClassificationDataset(csv_path=train_csv, image_root_dir=IMAGE_ROOT_DIR, transform=pre_cache_transforms)
     base_val_dataset = CXRClassificationDataset(csv_path=val_csv, image_root_dir=IMAGE_ROOT_DIR, transform=pre_cache_transforms)
 
-    # --- Wrap with CacheDataset for In-Memory Caching ---
-    # Start with a lower value like 0.25 and increase if you have enough memory.
     RAM_CACHE_RATE = config.training.ram_cache_rate
-    print(f"Initializing in-memory CacheDataset with cache_rate={RAM_CACHE_RATE}. This may take a while on the first run...")
+    print(f"Initializing in-memory CacheDataset with cache_rate={RAM_CACHE_RATE}...")
+    train_dataset = CacheDataset(data=base_train_dataset, cache_rate=RAM_CACHE_RATE, num_workers=config.dataloader.num_workers)
+    val_dataset = CacheDataset(data=base_val_dataset, cache_rate=RAM_CACHE_RATE, num_workers=config.dataloader.num_workers)
 
-    train_dataset = CacheDataset(
-        data=base_train_dataset,
-        cache_rate=RAM_CACHE_RATE,
-        num_workers=config.dataloader.num_workers
-    )
-    val_dataset = CacheDataset(
-        data=base_val_dataset,
-        cache_rate=RAM_CACHE_RATE,
-        num_workers=config.dataloader.num_workers
-    )
-
-    # --- Create DataLoaders ---
     dl_config = config.dataloader
     train_loader = DataLoader(train_dataset, batch_size=dl_config.batch_size, shuffle=True, num_workers=dl_config.num_workers, pin_memory=True, persistent_workers=True)
     val_loader = DataLoader(val_dataset, batch_size=dl_config.batch_size, shuffle=False, num_workers=dl_config.num_workers, pin_memory=True, persistent_workers=True)
 
     # --- 4. Model, Loss, Optimizer ---
     print("Initializing model, criterion, and optimizer...")
-
-    print("Initializing GPU-based augmentations...")
-    gpu_augmentations = RandAffine(
-        prob=config.data.augmentations.rand_affine_prob,
-        rotate_range=config.data.augmentations.rotate_range,
-        scale_range=config.data.augmentations.scale_range,
-        device=device  # This assigns the transform to the GPU
-    )
-    
     model = FractureDetector(base_model_name=config.model.base_model, in_channels=input_channels).to(device)
     
     loss_config = config.training.loss
@@ -244,7 +241,7 @@ def run_training(
         optimizer, mode='min', factor=scheduler_config.factor, patience=scheduler_config.patience
     ) if scheduler_config.name.lower() == 'reducelronplateau' else None
 
-    # --- 5. Checkpoint Loading & Training State ---
+    # --- 5. Checkpoint Loading & Training State (Unchanged) ---
     start_epoch = 0
     best_val_auc = 0.0
     epochs_no_improve = 0
@@ -252,7 +249,6 @@ def run_training(
     if resume_dir:
         checkpoint_filename = "last_model.pth" if resume_from == "last" else config.training.output_model_name
         checkpoint_path = os.path.join(output_run_dir, checkpoint_filename)
-        print(f"Attempting to resume training from '{resume_from}' checkpoint: {checkpoint_path}")
         if os.path.isfile(checkpoint_path):
             print("Checkpoint found. Loading state...")
             checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -262,11 +258,10 @@ def run_training(
             best_val_auc = checkpoint.get('best_val_auc', 0.0)
             print(f"Resuming from epoch {start_epoch}. Best validation AUC: {best_val_auc:.4f}")
         else:
-            print(f"Warning: Checkpoint not found at '{checkpoint_path}'. Starting a new run in the directory.")
+            print(f"Warning: Checkpoint not found at '{checkpoint_path}'. Starting a new run.")
 
-    # --- 6. W&B Integration ---
+    # --- 6. W&B Integration (Unchanged) ---
     if config.wandb.enabled:
-        # Use the final run name for W&B
         run_name = os.path.basename(output_run_dir)
         project_name = f"{config.wandb.project}_{config.pathology}"
         wandb.init(project=project_name, entity=config.wandb.entity, name=run_name, config=asdict(config))
@@ -279,8 +274,9 @@ def run_training(
         for epoch in range(start_epoch, config.training.epochs):
             print(f"\nEpoch {epoch + 1}/{config.training.epochs}")
             
-            train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, augment_fn=gpu_augmentations)
-            val_loss, val_auc = validate(model, val_loader, criterion, device)
+            # This call now correctly passes the combined GPU transforms
+            train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, augment_fn=gpu_train_transforms)
+            val_loss, val_auc = validate(model, val_loader, criterion, device, transform_fn=gpu_val_transforms)
 
             if scheduler:
                 scheduler.step(val_loss)
@@ -301,7 +297,6 @@ def run_training(
                 epochs_no_improve += 1
                 print(f"Validation AUC did not improve for {epochs_no_improve} epoch(s).")
             
-            # Always save the last model checkpoint
             last_model_path = os.path.join(output_run_dir, "last_model.pth")
             torch.save({
                 'epoch': epoch, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict(),
@@ -320,7 +315,6 @@ def run_training(
 
     except KeyboardInterrupt:
         print("\n\n--- Training interrupted by user. Exiting gracefully. ---")
-        # The 'last_model.pth' from the last completed epoch is already saved.
     
     print("\n--- Training Complete ---")
     print(f"Finished training. Best validation AUC achieved: {best_val_auc:.4f}")
