@@ -1,6 +1,6 @@
-# MIMIC-CXR Pathology Classification with Wavelet & Ridgelet Preprocessing
+# MIMIC-CXR Pathology Classification with Wavelet Preprocessing
 
-This project provides a flexible deep learning pipeline for the binary classification of various pathologies (e.g., **Cardiomegaly**, **Edema**, **Fracture**) in chest X-ray images from the **MIMIC-CXR-JPG dataset**. The primary scientific goal is to investigate the effectiveness of wavelet-based transforms, such as the **Ridgelet Transform** and **Wavelet Transform**, as preprocessing techniques to enhance feature extraction and improve classification performance.
+This project provides a flexible deep learning pipeline for the binary classification of various pathologies (e.g., **Cardiomegaly**, **Edema**, **Fracture**) in chest X-ray images from the **MIMIC-CXR-JPG dataset**. The primary scientific goal is to investigate the effectiveness of wavelet-based transforms, such as the **Wavelet Transform** and **Ridgelet Transform**, as preprocessing techniques to enhance feature extraction and improve classification performance.
 
 The current implementation provides a complete and configurable pipeline for training and evaluating models on any chosen pathology from the dataset.
 
@@ -13,42 +13,47 @@ The current implementation provides a complete and configurable pipeline for tra
   * **Automated Data Preparation**: Includes a script to automatically generate balanced training, validation, and test splits based on the configured pathology.
   * **Configuration Driven**: Leverages YAML files for easy management of hyperparameters, model selection, and data paths, ensuring a reproducible workflow.
   * **Best Practices**: Implements on-the-fly data augmentation, model checkpointing, early stopping, and Weights & Biases integration.
+  * **Testing**: Includes a suite of unit tests to ensure code reliability.
 
 ## Project Structure
 
 The repository is organized to maintain a clear separation of concerns:
 
 ```
-MIMIC_Ridgelet/
-├── configs/              # YAML configuration files for experiments
-├── data/                 # Data storage (e.g., for generated CSV splits)
-├── notebooks/            # Jupyter notebooks for exploration and visualization
-├── scripts/              # Standalone scripts (e.g., data preparation)
-├── src/                  # Main source code
-│   ├── config/           # Configuration loading logic
-│   ├── data/             # PyTorch Dataset and transform definitions
-│   ├── models/           # Model architectures
-│   ├── ridgelet/         # Ridgelet transform implementation
-│   └── training/         # Training and validation scripts
-├── .env.example          # Example environment variables file
+
+mimic\_wavelet\_preprocessing/
+├── configs/              \# YAML configuration files for experiments
+├── data/                 \# Data storage (e.g., for generated CSV splits)
+├── notebooks/            \# Jupyter notebooks for exploration and visualization
+├── scripts/              \# Standalone scripts (e.g., data preparation)
+├── src/                  \# Main source code
+│   ├── config/           \# Configuration loading logic
+│   ├── data/             \# PyTorch Dataset and transform definitions
+│   ├── models/           \# Model architectures
+│   ├── ridgelet/         \# Ridgelet transform implementation
+│   └── training/         \# Training and validation scripts
+├── tests/                \# Unit and integration tests
+├── .env.example          \# Example environment variables file
+├── environment.yml       \# Conda environment definition
 └── README.md
-```
+
+````
 
 ## Setup and Installation
 
-### 1\. Prerequisites
+### 1. Prerequisites
 
-  * Python 3.8+
+  * Python 3.11
   * Conda/Mamba
   * Access to the [MIMIC-CXR-JPG dataset](https://physionet.org/content/mimic-cxr-jpg/2.0.0/). You must have the required credentials and have downloaded the data.
 
-### 2\. Installation
+### 2. Installation
 
 1.  **Clone the repository:**
 
     ```bash
-    git clone https://github.com/joacodef/mimic_ridgelet.git
-    cd mimic_ridgelet
+    git clone <your-repository-url> mimic_wavelet_preprocessing
+    cd mimic_wavelet_preprocessing
     ```
 
 2.  **Create and activate a Conda environment:**
@@ -56,7 +61,7 @@ MIMIC_Ridgelet/
 
     ```bash
     conda env create -f environment.yml
-    conda activate magister
+    conda activate mimic_gpu
     ```
 
 3.  **Set up Environment Variables:**
@@ -75,7 +80,7 @@ MIMIC_Ridgelet/
 
 ## Usage
 
-The entire workflow is controlled by the configuration file. The process is simple: **1. Edit Config -\> 2. Create Splits -\> 3. Train Model**.
+The entire workflow is controlled by the configuration file. The process is simple: **1. Edit Config -> 2. Create Splits -> 3. Train Model**.
 
 ### Step 1: Configure Your Experiment
 
@@ -93,7 +98,7 @@ data:
   train_size: 80000
   image_size: 512
 # ... other parameters
-```
+````
 
 ### Step 2: Create Data Splits
 
@@ -114,3 +119,17 @@ python -m src.training.train --config configs/config_example.yaml
 ```
 
 The script will log progress to the console and to Weights & Biases (if enabled). Trained models will be saved in the directory specified by `PROJECT_OUTPUT_FOLDER_PATH`, organized by pathology.
+
+## Testing
+
+To ensure the reliability of the codebase, you can run the suite of unit tests. Make sure you have activated the `mimic_gpu` conda environment first.
+
+From the root of the project directory, run:
+
+```bash
+pytest
+```
+
+This command will automatically discover and run all tests located in the `tests/` directory.
+
+```
