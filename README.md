@@ -131,5 +131,3 @@ pytest
 ```
 
 This command will automatically discover and run all tests located in the `tests/` directory.
-
-```
