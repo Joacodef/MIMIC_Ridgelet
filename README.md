@@ -8,8 +8,8 @@ The current implementation provides a complete and configurable pipeline for tra
 
   * **Configurable Classification Target**: Easily switch the pathology for classification (e.g., from "Fracture" to "Cardiomegaly") by changing a single line in a configuration file.
   * **End-to-End Pipeline**: A full training and validation pipeline for image classification.
-  * **Advanced Preprocessing**: Includes customizable `WaveletTransformd` and `RidgeletTransformd` to apply advanced signal processing techniques as part of the data pipeline.
-  * **Adaptable Model**: Utilizes pre-trained models (e.g., ResNet, DenseNet) adapted for single-channel or multi-channel medical images.
+  * **Wavelet Preprocessing**: Includes customizable `WaveletTransformd` and `RidgeletTransformd` to apply advanced signal processing techniques as part of the data pipeline.
+  * **Selectable Model**: Utilizes pre-trained models (e.g., ResNet, DenseNet) adapted for single-channel or multi-channel medical images.
   * **Automated Data Preparation**: Includes a script to automatically generate balanced training, validation, and test splits based on the configured pathology.
   * **Configuration Driven**: Leverages YAML files for easy management of hyperparameters, model selection, and data paths, ensuring a reproducible workflow.
   * **Best Practices**: Implements on-the-fly data augmentation, model checkpointing, early stopping, and Weights & Biases integration.
